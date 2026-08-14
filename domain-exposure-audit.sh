@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 PROGNAME="${0##*/}"
 
 # ---------------------------------------------------------------------------
@@ -28,6 +28,8 @@ PROGNAME="${0##*/}"
 : "${DEA_CONFIG:=}"
 : "${DEA_TIMEOUT:=20}"
 : "${DEA_CT_CACHE_HOURS:=6}"
+: "${DEA_PARALLEL:=8}"
+: "${DEA_HARVEST_SOURCES:=bing,duckduckgo,crtsh,otx,urlscan,rapiddns}"
 : "${DEA_NOTIFY_CMD:=}"
 : "${DEA_USER_AGENT:=domain-exposure-audit/$VERSION (+self-audit)}"
 : "${SHODAN_API_KEY:=}"
@@ -38,6 +40,9 @@ DO_HTTP=1
 DO_CT=1
 DO_ARCHIVE=1
 DO_EXIF=0
+DO_ENRICH=1
+DO_HARVEST=0
+ENRICH_ALL=""
 SET_BASELINE=0
 DIFF_ONLY=0
 EMIT_JSON=0
@@ -118,6 +123,12 @@ WHICH CHECKS TO RUN
       --no-http           do not send HTTP requests
       --no-ct             do not query Certificate Transparency (crt.sh)
       --no-archive        do not query the Wayback Machine
+      --no-enrich         do not use subfinder, even if it is installed
+      --enrich-all        tell subfinder to use every source. Some sources
+                          need an API key in the subfinder configuration.
+      --harvest           use theHarvester to search for email addresses and
+                          hostnames. This sends many requests to search
+                          engines, and a search engine can stop them.
       --exif              get the images from the home page. Look for GPS data.
       --wordlist FILE     more possible subdomain names. One name on each line.
 
@@ -132,6 +143,8 @@ OUTPUT
 OTHER
       --timeout SEC       the network timeout for each request
                           Default: $DEA_TIMEOUT seconds
+      --parallel N        how many DNS queries the tool sends at the same time
+                          Default: $DEA_PARALLEL. Use 1 for one query at a time.
   -V, --version
   -h, --help
 
@@ -167,10 +180,14 @@ while [ $# -gt 0 ]; do
     --no-ct)         DO_CT=0; shift ;;
     --no-archive)    DO_ARCHIVE=0; shift ;;
     --exif)          DO_EXIF=1; shift ;;
+    --no-enrich)     DO_ENRICH=0; shift ;;
+    --enrich-all)    DO_ENRICH=1; ENRICH_ALL=1; shift ;;
+    --harvest)       DO_HARVEST=1; shift ;;
     --wordlist)      WORDLIST="$2"; shift 2 ;;
     --json)          EMIT_JSON=1; shift ;;
     --notify)        DEA_NOTIFY_CMD="$2"; shift 2 ;;
     --timeout)       DEA_TIMEOUT="$2"; shift 2 ;;
+    --parallel)      DEA_PARALLEL="$2"; shift 2 ;;
     -q|--quiet)      QUIET=1; COLOR=0; shift ;;
     --no-color)      COLOR=0; shift ;;
     -V|--version)    printf '%s %s\n' "$PROGNAME" "$VERSION"; exit 0 ;;
@@ -398,6 +415,127 @@ rdap_base_for_tld() {
   esac
 }
 
+# assess_contact SOURCE ROLES KEY VALUE
+# The function writes a result if the value holds personal data. SOURCE is the
+# name of the service that gave the value, for example RDAP or WHOIS.
+#
+# The function sets these variables in the caller:
+#   AC_PII       1 if the function found personal data
+#   AC_REGION    the region, if the value holds one
+#   AC_COUNTRY   the country, if the value holds one
+assess_contact() {
+  local source="$1" roles="$2" key="$3" value="$4"
+
+  case "$roles" in *registrant*|*administrative*|*technical*|*abuse*) ;; *) return 0 ;; esac
+
+  case "$key" in
+    adr)
+      # The parts of a vCard address are in this order: post office box,
+      # extension, street, city, region, postal code, and country.
+      local _pobox _ext street city reg_ post country_
+      IFS='|' read -r _pobox _ext street city reg_ post country_ <<< "$value"
+      [ -n "${reg_:-}" ] && AC_REGION="$reg_"
+      [ -n "${country_:-}" ] && AC_COUNTRY="$country_"
+      if ! is_redacted "$street"; then
+        add_result HIGH PII-STREET "$source shows the street address of the $roles. Any person can read it."
+        AC_PII=1
+      fi
+      if ! is_redacted "$city"; then
+        add_result HIGH PII-CITY "$source shows the city of the $roles. Any person can find your city."
+        AC_PII=1
+      fi
+      if ! is_redacted "$post"; then
+        add_result HIGH PII-POSTCODE "$source shows the postal code of the $roles. A postal code gives an attacker a small group of streets."
+        AC_PII=1
+      fi
+      ;;
+    street)
+      if ! is_redacted "$value"; then
+        add_result HIGH PII-STREET "$source shows the street address of the $roles. Any person can read it."
+        AC_PII=1
+      fi
+      ;;
+    city)
+      if ! is_redacted "$value"; then
+        add_result HIGH PII-CITY "$source shows the city of the $roles. Any person can find your city."
+        AC_PII=1
+      fi
+      ;;
+    postcode)
+      if ! is_redacted "$value"; then
+        add_result HIGH PII-POSTCODE "$source shows the postal code of the $roles. A postal code gives an attacker a small group of streets."
+        AC_PII=1
+      fi
+      ;;
+    region)
+      [ -n "$value" ] && AC_REGION="$value"
+      ;;
+    country)
+      [ -n "$value" ] && AC_COUNTRY="$value"
+      ;;
+    fn|org|name)
+      case "$roles" in
+        *registrant*)
+          if ! is_redacted "$value"; then
+            add_result MEDIUM PII-NAME "$source shows the name or the organization of the $roles. This gives your identity, but not your location."
+            AC_PII=1
+          fi ;;
+      esac
+      ;;
+    email)
+      if ! is_redacted "$value"; then
+        add_result MEDIUM PII-EMAIL "$source shows the email address of the $roles. Programs will collect it. You will get false messages about your domain."
+        AC_PII=1
+      fi
+      ;;
+    tel|phone)
+      # The telephone number of the registrar is normal. It is not your number.
+      if ! is_redacted "$value"; then
+        add_result LOW RDAP-TEL "$source shows this telephone number for the $roles: $value. Make sure that the number belongs to the registrar and not to you."
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# check_registration_whois DOMAIN -> read the contact fields from port 43
+# The tool uses this function when RDAP has no server for the TLD. Many ccTLDs
+# are not in the IANA RDAP list.
+check_registration_whois() {
+  local domain="$1" w="$WORK/whois-fallback.txt"
+  [ "$HAVE_WHOIS" -eq 1 ] || return 1
+  timeout "$DEA_TIMEOUT" whois "$domain" > "$w" 2>/dev/null || true
+  [ -s "$w" ] || return 1
+  grep -qiE 'registrar|registrant|creation date|registry domain id|domain name' "$w" || return 1
+
+  local line label value roles key
+  while IFS= read -r line; do
+    label="$(printf '%s' "$line" | cut -d: -f1 | tr '[:upper:]' '[:lower:]' | tr -s ' ' ' ')"
+    value="$(printf '%s' "$line" | cut -d: -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$value" ] || continue
+
+    case "$label" in
+      *registrant*)     roles="registrant" ;;
+      *admin*)          roles="administrative" ;;
+      *tech*)           roles="technical" ;;
+      *)                continue ;;
+    esac
+    case "$label" in
+      *street*|*address*)             key="street" ;;
+      *city*)                         key="city" ;;
+      *postal*|*post\ code*|*zip*)    key="postcode" ;;
+      *state*|*province*)             key="region" ;;
+      *country*)                      key="country" ;;
+      *email*|*e-mail*)               key="email" ;;
+      *phone*|*tel*|*fax*)            key="phone" ;;
+      *name*|*organi*)                key="name" ;;
+      *)                              continue ;;
+    esac
+    assess_contact WHOIS "$roles" "$key" "$value"
+  done < "$w"
+  return 0
+}
+
 check_registration() {
   local domain="$1"
   local tld="${domain##*.}"
@@ -417,27 +555,48 @@ check_registration() {
   code="$(fetch "$url" "$reg" 'application/rdap+json')"
   say "  registry RDAP  $url  -> $code"
 
+  AC_PII=0; AC_REGION=""; AC_COUNTRY=""
+
+  # The tool reads the HTTP code first. An RDAP server that does not hold a TLD
+  # answers 404, and the body of that answer is often not JSON. Therefore a test
+  # for valid JSON must come after this step.
+  case "$code" in
+    404)
+      # A 404 has two possible meanings. The domain has no registration, or the
+      # RDAP server does not hold this TLD. The tool asks WHOIS on port 43.
+      if check_registration_whois "$domain"; then
+        add_result MEDIUM RDAP-NO-SERVER "RDAP has no server for .$tld. WHOIS on port 43 answers, therefore the domain has a registration. The tool read the contact fields from WHOIS."
+        say "  RDAP has no server for .$tld. The tool reads WHOIS on port 43."
+        if [ "$AC_PII" -eq 0 ]; then
+          add_result LOW WHOIS-REDACTED "WHOIS on port 43 shows no personal data in the contact fields."
+        fi
+        [ -n "$AC_REGION" ] && ! is_redacted "$AC_REGION" && \
+          add_result LOW RDAP-REGION "WHOIS shows this region: $AC_REGION. ICANN rules make this necessary. No registrar can hide it."
+        [ -n "$AC_COUNTRY" ] && ! is_redacted "$AC_COUNTRY" && \
+          add_result LOW RDAP-COUNTRY "WHOIS shows this country: $AC_COUNTRY. ICANN rules make this necessary."
+        jq -n --argjson pii "$AC_PII" --arg region "$AC_REGION" --arg country "$AC_COUNTRY" \
+          '{registered: true, source: "whois", statuses: [], expires: "",
+            region: $region, country: $country, registrar_rdap: "",
+            pii_published: ($pii == 1)}' > "$WORK/registration.json"
+      else
+        add_result LOW RDAP-NOTFOUND "The registry says that this domain has no registration."
+        printf '{"registered":false}' > "$WORK/registration.json"
+      fi
+      return ;;
+    *)   : ;;
+  esac
+
+  # A failure gives one result only. If the body is not JSON, the tool writes
+  # RDAP-UNREADABLE. If the body is JSON but the code is not 2xx, the tool
+  # writes RDAP-HTTP.
   if ! jq -e . "$reg" >/dev/null 2>&1; then
     add_result MEDIUM RDAP-UNREADABLE "The registry RDAP server gave no valid JSON. The HTTP code was $code. This run did not check your registration data."
     printf '{}' > "$WORK/registration.json"
     return
   fi
-
   case "$code" in
-    404) # A 404 has two possible meanings. The domain has no registration, or
-         # the RDAP server does not hold this TLD. Many ccTLDs are not in the
-         # IANA list. Ask WHOIS on port 43 before the tool decides.
-         if [ "$HAVE_WHOIS" -eq 1 ] && \
-            timeout "$DEA_TIMEOUT" whois "$domain" 2>/dev/null \
-            | grep -qiE 'registrar|registrant|creation date|registry domain id'; then
-           add_result MEDIUM RDAP-NO-SERVER "RDAP has no server for .$tld, but WHOIS on port 43 shows a registration. Read the WHOIS answer yourself. This run did not check your contact data."
-           say "  RDAP has no server for .$tld. WHOIS on port 43 answers."
-         else
-           add_result LOW RDAP-NOTFOUND "The registry says that this domain has no registration."
-         fi
-         printf '{"registered":false}' > "$WORK/registration.json"; return ;;
-    2*)  : ;;
-    *)   add_result MEDIUM RDAP-HTTP "The registry RDAP server gave the HTTP code $code. The registration data from this run is not reliable." ;;
+    2*) : ;;
+    *)  add_result MEDIUM RDAP-HTTP "The registry RDAP server gave the HTTP code $code. The registration data from this run is not reliable." ;;
   esac
 
   # The registrar RDAP server holds the contact records. The registry holds
@@ -471,64 +630,23 @@ check_registration() {
       ] | @tsv
   ' "$src" 2>/dev/null > "$WORK/vcards.tsv"
 
-  local pii_found=0 registrant_seen=0 region="" country=""
+  local registrant_seen=0
   while IFS=$'\t' read -r roles key value; do
-    case "$roles" in *registrant*|*administrative*|*technical*|*abuse*) ;; *) continue ;; esac
     case "$roles" in *registrant*) registrant_seen=1 ;; esac
-
-    case "$key" in
-      adr)
-        # The parts of a vCard address are in this order: post office box,
-        # extension, street, city, region, postal code, and country.
-        local _pobox _ext street city reg_ post country_
-        IFS='|' read -r _pobox _ext street city reg_ post country_ <<< "$value"
-        region="${reg_:-$region}"; country="${country_:-$country}"
-        if ! is_redacted "$street"; then
-          add_result HIGH PII-STREET "RDAP shows the street address of the $roles. Any person can read it."
-          pii_found=1
-        fi
-        if ! is_redacted "$city"; then
-          add_result HIGH PII-CITY "RDAP shows the city of the $roles. Any person can find your city."
-          pii_found=1
-        fi
-        if ! is_redacted "$post"; then
-          add_result HIGH PII-POSTCODE "RDAP shows the postal code of the $roles. A postal code gives an attacker a small group of streets."
-          pii_found=1
-        fi
-        ;;
-      fn|org)
-        if ! is_redacted "$value"; then
-          case "$roles" in
-            *registrant*) add_result MEDIUM PII-NAME "RDAP shows the name or the organization of the $roles. This gives your identity, but not your location." ; pii_found=1 ;;
-          esac
-        fi
-        ;;
-      email)
-        if ! is_redacted "$value"; then
-          add_result MEDIUM PII-EMAIL "RDAP shows the email address of the $roles. Programs will collect it. You will get false messages about your domain."
-          pii_found=1
-        fi
-        ;;
-      tel)
-        # The telephone number of the registrar is normal. It is not your
-        # number.
-        if ! is_redacted "$value"; then
-          add_result LOW RDAP-TEL "RDAP shows this telephone number for the $roles: $value. Make sure that the number belongs to the registrar and not to you."
-        fi
-        ;;
-    esac
+    assess_contact RDAP "$roles" "$key" "$value"
   done < "$WORK/vcards.tsv"
 
   if [ "$registrant_seen" -eq 0 ]; then
     add_result LOW RDAP-NO-REGISTRANT "RDAP shows no registrant record. This is the best possible result."
-  elif [ "$pii_found" -eq 0 ]; then
+  elif [ "$AC_PII" -eq 0 ]; then
     add_result LOW RDAP-REDACTED "RDAP shows a registrant record. All the personal fields hold redacted data."
   fi
 
-  [ -n "$region" ] && ! is_redacted "$region" && \
-    add_result LOW RDAP-REGION "RDAP shows this region: $region. ICANN rules make this necessary. No registrar can hide it."
-  [ -n "$country" ] && ! is_redacted "$country" && \
-    add_result LOW RDAP-COUNTRY "RDAP shows this country: $country. ICANN rules make this necessary."
+  [ -n "$AC_REGION" ] && ! is_redacted "$AC_REGION" && \
+    add_result LOW RDAP-REGION "RDAP shows this region: $AC_REGION. ICANN rules make this necessary. No registrar can hide it."
+  [ -n "$AC_COUNTRY" ] && ! is_redacted "$AC_COUNTRY" && \
+    add_result LOW RDAP-COUNTRY "RDAP shows this country: $AC_COUNTRY. ICANN rules make this necessary."
+  local pii_found="$AC_PII" region="$AC_REGION" country="$AC_COUNTRY"
 
   # --- lock status and expiry ---
   local statuses statuses_flat expiry
@@ -608,7 +726,7 @@ check_dns() {
   ns="$(dig_short NS "$domain")"
   soa="$(dig_short SOA "$domain")"
   a="$(dig_short A "$domain" | grep -E '^[0-9]+\.' || true)"
-  aaaa="$(dig_short AAAA "$domain" | grep ':' || true)"
+  aaaa="$(dig_short AAAA "$domain" | grep -E '^[0-9a-fA-F]*:[0-9a-fA-F:]*$' || true)"
   mx="$(dig_short MX "$domain")"
   txt="$(dig_short TXT "$domain")"
   caa="$(dig_short CAA "$domain")"
@@ -691,6 +809,130 @@ check_dns() {
 # CHECK 3 — Certificate Transparency
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Enrichment: more hostnames from other programs
+# ---------------------------------------------------------------------------
+# Certificate Transparency is the best source of hostnames, but it is one
+# service. A run on three domains showed that crt.sh gave no answer three times
+# out of three. Therefore the tool can also use subfinder, which reads about 30
+# passive sources.
+#
+# Each program here is passive. It sends no traffic to your hosts. The tool does
+# not do an active scan. See docs/CHECKS.md, Check 10.
+
+# enrich_subfinder DOMAIN -> write hostnames to stdout
+enrich_subfinder() {
+  local domain="$1"
+  # -silent gives the names only. The tool does not use -all, because -all uses
+  # the sources that need an API key.
+  timeout "$(( DEA_TIMEOUT * 6 ))" subfinder -d "$domain" -silent \
+    -timeout 10 ${ENRICH_ALL:+-all} 2>/dev/null \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//' \
+    | grep -E "^[a-z0-9._-]+\.${domain//./\\.}$" \
+    | sort -u
+}
+
+# enrich_harvester DOMAIN -> write hostnames to stdout, and write results for
+# each email address that it finds.
+enrich_harvester() {
+  local domain="$1" base="$WORK/harvest"
+  # Remove the file from an earlier domain. theHarvester writes the file itself,
+  # therefore the tool must remove it. Without this step, the data of one domain
+  # becomes a result for the next domain.
+  rm -f "$base" "$base".* 2>/dev/null || true
+  # theHarvester writes the file <base>.json. The name of each key changed
+  # between versions, therefore the tool reads more than one name.
+  timeout "$(( DEA_TIMEOUT * 12 ))" theHarvester \
+    -d "$domain" -b "$DEA_HARVEST_SOURCES" -f "$base" >/dev/null 2>&1 || true
+
+  local jf=""
+  for cand in "$base.json" "${base}.json" "$base"; do
+    [ -f "$cand" ] && jq -e . "$cand" >/dev/null 2>&1 && { jf="$cand"; break; }
+  done
+  [ -n "$jf" ] || return 1
+
+  # Email addresses. This is the reason to use this program.
+  local mail
+  while IFS= read -r mail; do
+    [ -n "$mail" ] || continue
+    add_result MEDIUM HARVEST-EMAIL "A public search found this email address for your domain: $mail. Programs collect an address from a search engine, therefore you will get false messages."
+  done < <(jq -r '((.emails // .email // []) | if type == "array" then .[] else . end) // empty' "$jf" 2>/dev/null | sort -u | head -25)
+
+  jq -r '((.hosts // .host // []) | if type == "array" then .[] else . end) // empty' "$jf" 2>/dev/null \
+    | cut -d: -f1 | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//' \
+    | grep -E "^[a-z0-9._-]+\.${domain//./\\.}$" \
+    | sort -u
+  return 0
+}
+
+# check_enrich DOMAIN -> write the extra hostnames to $WORK/enrich-names.txt
+check_enrich() {
+  local domain="$1"
+  : > "$WORK/enrich-names.txt"
+  : > "$WORK/enrich-sources.txt"
+
+  if [ "$DO_ENRICH" -eq 0 ] && [ "$DO_HARVEST" -eq 0 ]; then
+    printf '{"used":[],"names":0}' > "$WORK/enrich.json"
+    return
+  fi
+
+  # Is any program available?
+  local have_any=0
+  [ "$DO_ENRICH" -eq 1 ] && need subfinder && have_any=1
+  [ "$DO_HARVEST" -eq 1 ] && need theHarvester && have_any=1
+  if [ "$have_any" -eq 0 ]; then
+    add_result LOW ENRICH-ABSENT "No program for more hostnames is installed. Certificate Transparency is the only source of real hostnames, and that service often stops requests. Install subfinder to make Check 4 more reliable."
+    printf '{"used":[],"names":0}' > "$WORK/enrich.json"
+    return
+  fi
+
+  head1 "3b. More hostnames from other programs"
+
+  if [ "$DO_ENRICH" -eq 1 ]; then
+    if need subfinder; then
+      local n
+      enrich_subfinder "$domain" >> "$WORK/enrich-names.txt"
+      n="$(sort -u "$WORK/enrich-names.txt" | grep -c . || true)"
+      say "  subfinder found $n name(s)"
+      printf 'subfinder\n' >> "$WORK/enrich-sources.txt"
+    fi
+  fi
+
+  if [ "$DO_HARVEST" -eq 1 ]; then
+    if need theHarvester; then
+      local before after
+      before="$(grep -c . "$WORK/enrich-names.txt" || true)"
+      if enrich_harvester "$domain" >> "$WORK/enrich-names.txt"; then
+        after="$(grep -c . "$WORK/enrich-names.txt" || true)"
+        say "  theHarvester added $(( after - before )) name(s)"
+        printf 'theHarvester\n' >> "$WORK/enrich-sources.txt"
+      else
+        say "  theHarvester gave no data that the tool can read."
+        add_result LOW HARVEST-UNREADABLE "theHarvester gave no JSON file that the tool can read. A search engine possibly stopped the requests. This is not a result about your domain."
+      fi
+    fi
+  fi
+
+  sort -u "$WORK/enrich-names.txt" -o "$WORK/enrich-names.txt"
+  local total; total="$(grep -c . "$WORK/enrich-names.txt" || true)"
+
+  # Which names did the other programs find that Certificate Transparency did
+  # not? This is the value that the enrichment adds.
+  if [ "$total" -gt 0 ] && [ -s "$WORK/ct-plain.txt" ]; then
+    local only
+    only="$(comm -23 "$WORK/enrich-names.txt" <(sort -u "$WORK/ct-plain.txt") 2>/dev/null | grep -c . || true)"
+    [ "$only" -gt 0 ] && add_result LOW ENRICH-HOSTNAMES "The other programs found $only hostname(s) that Certificate Transparency does not hold. Read the list in Check 4."
+  elif [ "$total" -gt 0 ]; then
+    add_result LOW ENRICH-HOSTNAMES "The other programs found $total hostname(s). Certificate Transparency gave no data this run, therefore these names are the only source."
+  fi
+
+  jq -n --argjson names "$total" \
+    --argjson used "$(cat "$WORK/enrich-sources.txt" | json_lines)" \
+    '{used: $used, names: $names}' > "$WORK/enrich.json"
+}
+
 check_ct() {
   local domain="$1"
   head1 "3. Certificate Transparency (crt.sh)"
@@ -701,18 +943,45 @@ check_ct() {
     return
   fi
 
-  local out="$WORK/ct.json.raw" code
-  code="$(cache_fetch "https://crt.sh/?q=%25.${domain}&output=json" "$out" "$DEA_CT_CACHE_HOURS" 'application/json')"
-  say "  crt.sh -> $code"
+  local out="$WORK/ct.json.raw" code attempt=0 ct_source=""
+  : > "$WORK/ct-names.txt"
 
-  if ! jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
-    add_result MEDIUM CT-UNAVAILABLE "crt.sh gave no valid JSON. The HTTP code was $code. crt.sh often limits requests. Run the tool again later."
+  # Try crt.sh three times. It often limits requests, and it answers 502 or 503
+  # when it has too much work.
+  while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+    code="$(cache_fetch "https://crt.sh/?q=%25.${domain}&output=json" "$out" "$DEA_CT_CACHE_HOURS" 'application/json')"
+    say "  crt.sh try number $attempt -> $code"
+    if jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
+      ct_source="crt.sh"
+      jq -r '.[].name_value' "$out" 2>/dev/null | tr ',' '\n' | lc \
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
+      break
+    fi
+    [ "$attempt" -lt 3 ] && sleep $(( attempt * 3 ))
+  done
+
+  # The second service. SSLMate CertSpotter reads the same public logs. It needs
+  # no key for a small number of requests each hour.
+  if [ -z "$ct_source" ]; then
+    local cs="$WORK/certspotter.json" cscode
+    cscode="$(cache_fetch "https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names&expand=issuer" \
+              "$cs" "$DEA_CT_CACHE_HOURS" 'application/json')"
+    say "  certspotter -> $cscode"
+    if jq -e 'type == "array"' "$cs" >/dev/null 2>&1; then
+      ct_source="certspotter"
+      jq -r '.[].dns_names[]?' "$cs" 2>/dev/null | lc \
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
+      cp "$cs" "$out"
+    fi
+  fi
+
+  if [ -z "$ct_source" ]; then
+    add_result MEDIUM CT-UNAVAILABLE "crt.sh and certspotter gave no valid data. The last HTTP code was $code. Both services limit requests. Run the tool again later. Check 4 used the word list only, therefore it possibly missed some hostnames."
     printf '{"error":true,"names":[],"wildcards":[]}' > "$WORK/ct.json"
     return
   fi
-
-  jq -r '.[].name_value' "$out" 2>/dev/null | tr ',' '\n' | lc \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
+  say "  the tool used $ct_source"
 
   local total wild plain
   total="$(wc -l < "$WORK/ct-names.txt" | tr -d ' ')"
@@ -737,15 +1006,21 @@ check_ct() {
     add_result LOW CT-MIXED "You have a wildcard certificate, but you also make a certificate for each host. Use only the wildcard certificate. Then no new hostname goes into a public log."
 
   local issuers latest
-  issuers="$(jq -r '.[].issuer_name' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | paste -sd'; ' - | cut -c1-200)"
-  latest="$(jq -r '.[].not_after' "$out" 2>/dev/null | sort -r | head -1)"
+  if [ "$ct_source" = "crt.sh" ]; then
+    issuers="$(jq -r '.[].issuer_name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | paste -sd'; ' - | cut -c1-200)"
+    latest="$(jq -r '.[].not_after // empty' "$out" 2>/dev/null | sort -r | head -1)"
+  else
+    issuers="$(jq -r '.[].issuer.name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | paste -sd'; ' - | cut -c1-200)"
+    latest="$(jq -r '.[].not_after // empty' "$out" 2>/dev/null | sort -r | head -1)"
+  fi
   [ -n "$issuers" ] && say "  issuers: $issuers"
 
   jq -n \
     --argjson names "$(cat "$WORK/ct-names.txt" | json_lines)" \
     --argjson wildcards "$(cat "$WORK/ct-wild.txt" | json_lines)" \
-    --arg issuers "$issuers" --arg latest "$latest" \
-    '{names: $names, wildcards: $wildcards, issuers: $issuers, latest_not_after: $latest}' \
+    --arg issuers "$issuers" --arg latest "$latest" --arg source "$ct_source" \
+    '{names: $names, wildcards: $wildcards, issuers: $issuers,
+      latest_not_after: $latest, source: $source}' \
     > "$WORK/ct.json"
 }
 
@@ -764,6 +1039,11 @@ check_hosts() {
   if [ -s "$WORK/ct-plain.txt" ]; then
     grep -E "(^|\.)${domain//./\\.}$" "$WORK/ct-plain.txt" >> "$WORK/candidates.txt" 2>/dev/null || true
   fi
+  # The names from the other programs are real names, the same as the names
+  # from Certificate Transparency.
+  if [ -s "$WORK/enrich-names.txt" ]; then
+    cat "$WORK/enrich-names.txt" >> "$WORK/candidates.txt"
+  fi
   local w
   for w in "${DEFAULT_WORDS[@]}"; do printf '%s.%s\n' "$w" "$domain" >> "$WORK/candidates.txt"; done
   if [ -n "$WORDLIST" ] && [ -f "$WORDLIST" ]; then
@@ -774,17 +1054,39 @@ check_hosts() {
   fi
   sort -u "$WORK/candidates.txt" | grep -v '^\*' > "$WORK/candidates.uniq"
   local ncand; ncand="$(wc -l < "$WORK/candidates.uniq" | tr -d ' ')"
-  say "  The tool queries $ncand possible names from the logs and the word list."
+  say "  The tool queries $ncand possible names. The names come from the logs, the other programs, and the word list."
+
+  # The helper resolves one name. xargs starts many copies of it at the same
+  # time. Each copy writes one line, and the line is short. Therefore the writes
+  # do not mix with each other.
+  cat > "$WORK/resolve1.sh" <<'RESOLVER'
+#!/usr/bin/env bash
+# resolve1.sh HOST OUTFILE
+# The output holds the hostname, the DNS status, the A records, and the AAAA
+# records. A tab character separates the four fields. A comma separates the
+# addresses in one field.
+host="$1"; out="$2"
+a_out="$(dig +noall +comment +answer +time=3 +tries=2 A "$host" 2>/dev/null)"
+status="$(printf '%s' "$a_out" | sed -n 's/.*status: \([A-Z]*\).*/\1/p' | head -1)"
+a="$(printf '%s' "$a_out" | awk '$4 == "A" { print $5 }' | sort -u | paste -sd, -)"
+aaaa="$(dig +short +time=3 +tries=2 AAAA "$host" 2>/dev/null | grep -E '^[0-9a-fA-F]*:[0-9a-fA-F:]*$' | sort -u | paste -sd, -)"
+printf '%s\t%s\t%s\t%s\n' "$host" "${status:-NOANSWER}" "$a" "$aaaa" >> "$out"
+RESOLVER
+  chmod +x "$WORK/resolve1.sh"
+
+  : > "$WORK/resolved.raw"
+  xargs -a "$WORK/candidates.uniq" -P "$DEA_PARALLEL" -I{} \
+    bash "$WORK/resolve1.sh" {} "$WORK/resolved.raw" 2>/dev/null || true
+  sort "$WORK/resolved.raw" > "$WORK/resolved.tsv"
 
   : > "$WORK/hosts.ndjson"
   : > "$WORK/live-hosts.txt"
-  local host status ips ip6s allips ip desc cls cf_count=0 origin_count=0
+  local host status a_csv aaaa_csv ips ip6s allips ip desc cls cf_count=0 origin_count=0
 
-  while IFS= read -r host; do
+  while IFS=$'\t' read -r host status a_csv aaaa_csv; do
     [ -n "$host" ] || continue
-    status="$(dig_status "$host")"
-    ips="$(dig_short A "$host" | grep -E '^[0-9]+\.' || true)"
-    ip6s="$(dig_short AAAA "$host" | grep ':' || true)"
+    ips="$(printf '%s' "$a_csv" | tr ',' '\n' | grep -E '^[0-9]+\.' || true)"
+    ip6s="$(printf '%s' "$aaaa_csv" | tr ',' '\n' | grep -E '^[0-9a-fA-F]*:[0-9a-fA-F:]*$' || true)"
     allips="$(printf '%s\n%s' "$ips" "$ip6s" | grep -v '^$' || true)"
 
     if [ -z "$allips" ]; then
@@ -842,7 +1144,7 @@ check_hosts() {
       --argjson aaaa "$(printf '%s' "$ip6s" | json_lines)" \
       '{host: $host, a: $a, aaaa: $aaaa, classification: $cls, networks: $net}' \
       >> "$WORK/hosts.ndjson"
-  done < "$WORK/candidates.uniq"
+  done < "$WORK/resolved.tsv"
 
   if [ ! -s "$WORK/live-hosts.txt" ]; then
     say "  $(c green 'No name points to an address.')"
@@ -994,7 +1296,8 @@ check_exif() {
     printf '{"skipped":true}' > "$WORK/exif.json"; return
   fi
 
-  local imgdir="$WORK/img"; mkdir -p "$imgdir"
+  # Remove the images of an earlier domain, for the same reason as above.
+  local imgdir="$WORK/img"; rm -rf "$imgdir"; mkdir -p "$imgdir"
   local page="$WORK/page.html" host
   host="$(head -1 "$WORK/live-hosts.txt")"
   curl -sk --max-time "$DEA_TIMEOUT" -A "$DEA_USER_AGENT" "https://$host" -o "$page" 2>/dev/null
@@ -1077,14 +1380,19 @@ build_snapshot() {
     --slurpfile archive "$WORK/archive.json" \
     --slurpfile exif "$WORK/exif.json" \
     --slurpfile shodan "$WORK/shodan.json" \
+    --slurpfile enrich "$WORK/enrich.json" \
     --argjson results "$(json_results)" \
     '{schema: ($schema | tonumber), domain: $domain, generated_at: $generated_at,
       tool_version: $tool_version,
       registration: ($registration[0] // {}), dns: ($dns[0] // {}),
       ct: ($ct[0] // {}), hosts: ($hosts[0] // []), http: ($http[0] // []),
       archive: ($archive[0] // {}), exif: ($exif[0] // {}),
-      shodan: ($shodan[0] // {}), results: $results}'
+      shodan: ($shodan[0] // {}), enrich: ($enrich[0] // {}),
+      results: $results}'
 }
+
+# num VALUE -> the value if it is a number, and 0 if it is not
+num() { case "${1:-}" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
 
 json_results() {
   if [ -s "$R_FILE" ]; then
@@ -1159,14 +1467,14 @@ write_report() { # write_report DOMAIN SNAPSHOT DIFF
     printf '## Results\n\n'
     local sev
     for sev in HIGH MEDIUM LOW; do
-      local n; n="$(jq --arg s "$sev" '[.results[] | select(.severity == $s)] | length' "$snap")"
+      local n; n="$(num "$(jq --arg s "$sev" '[.results[] | select(.severity == $s)] | length' "$snap" 2>/dev/null)")"
       [ "$n" -eq 0 ] && continue
       printf '### %s (%s)\n\n' "$sev" "$n"
       jq -r --arg s "$sev" '.results[] | select(.severity == $s)
         | "- **" + .code + "** — " + .message' "$snap"
       printf '\n'
     done
-    [ "$(jq '.results | length' "$snap")" -eq 0 ] && printf 'No results.\n\n'
+    [ "$(num "$(jq '.results | length' "$snap" 2>/dev/null)")" -eq 0 ] && printf 'No results.\n\n'
 
     printf '## Registration\n\n```json\n'
     jq '.registration' "$snap"
@@ -1197,12 +1505,15 @@ audit_domain() {
   IP_RESULT_DONE=()
   : > "$R_FILE"
   : > "$WORK/ct-plain.txt"
+  : > "$WORK/enrich-names.txt"
+  printf '{"used":[],"names":0}' > "$WORK/enrich.json"
 
   [ "$QUIET" -eq 1 ] || { printf '\n'; c bold "════ $domain ════"; printf '\n'; }
 
   check_registration "$domain"
   check_dns "$domain"
   check_ct "$domain"
+  check_enrich "$domain"
   check_hosts "$domain"
   check_http "$domain"
   check_archive "$domain"
@@ -1213,15 +1524,16 @@ audit_domain() {
   build_snapshot "$domain" > "$snap"
 
   local nc nw ni
-  nc="$(jq '[.results[] | select(.severity == "HIGH")] | length' "$snap")"
-  nw="$(jq '[.results[] | select(.severity == "MEDIUM")]     | length' "$snap")"
-  ni="$(jq '[.results[] | select(.severity == "LOW")]     | length' "$snap")"
+  nc="$(jq '[.results[] | select(.severity == "HIGH")]   | length' "$snap" 2>/dev/null)"
+  nw="$(jq '[.results[] | select(.severity == "MEDIUM")] | length' "$snap" 2>/dev/null)"
+  ni="$(jq '[.results[] | select(.severity == "LOW")]    | length' "$snap" 2>/dev/null)"
+  nc="$(num "$nc")"; nw="$(num "$nw")"; ni="$(num "$ni")"
 
   # --- diff against baseline ---
   local baseline="$sdir/baseline.json" dj="$WORK/diff.json" changed=0
   if [ -f "$baseline" ]; then
     diff_snapshots "$baseline" "$snap" > "$dj" 2>/dev/null || printf '{}' > "$dj"
-    [ "$(jq 'length' "$dj" 2>/dev/null || printf 0)" -gt 0 ] && changed=1
+    [ "$(num "$(jq 'length' "$dj" 2>/dev/null)")" -gt 0 ] && changed=1
   else
     printf '{}' > "$dj"
   fi

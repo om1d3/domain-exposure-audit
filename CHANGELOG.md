@@ -3,6 +3,98 @@
 This file uses ASD-STE100 Simplified Technical English. See
 [docs/STE-COMPLIANCE.md](docs/STE-COMPLIANCE.md).
 
+## 1.1.0
+
+This version corrects the faults that the run of version 1.0.1 found. It also
+adds two other programs as a source of hostnames.
+
+### Corrections
+
+- **The branch for the HTTP code 404 could not run.** The tool tested the body
+  for valid JSON before it read the code. An RDAP server that does not hold a
+  TLD answers 404 with a body that is not JSON, therefore the tool stopped at the
+  test for JSON. The correction of version 1.0.1 was behind a door that never
+  opened. The domain `humai.la` still got no check. The tool now reads the code
+  first.
+
+- **A TLD with no RDAP server now gets a full check.** Before, the tool only told
+  you to read the WHOIS answer yourself. It now reads the contact fields from
+  WHOIS on port 43 and writes the same `PII-` results. One function
+  `assess_contact` makes the decision for RDAP data and for WHOIS data.
+  Therefore the two paths cannot use different rules.
+
+- **A second service for Certificate Transparency.** crt.sh gave the codes 000,
+  404, and 503 in one run of three domains. The tool now tries crt.sh three
+  times, with a longer wait after each try. Then it tries CertSpotter, which
+  reads the same public logs.
+
+- **A message about a timeout became an IPv6 address.** The filter accepted any
+  line with a colon. A message such as `;; connection timed out` holds colons.
+  The filter now accepts only the characters of an IPv6 address.
+
+- **The data of one domain became a result for the next domain.** theHarvester
+  writes its own file. The tool did not remove that file before the next domain,
+  therefore it read the file of the domain before. The check for images had the
+  same fault. The tool now removes both before each domain.
+
+- **One failure gave two results.** An RDAP server that failed gave both
+  `RDAP-HTTP` and `RDAP-UNREADABLE`. It now gives one.
+
+- **A count from jq can be empty.** An empty count stopped a test with an error
+  message on the screen. A new function `num` gives 0 for a value that is not a
+  number.
+
+### The tool is faster
+
+The tool sends 8 DNS queries at the same time. Use `--parallel N` to change the
+number, and `--parallel 1` for one query at a time. The tool also reads the
+status and the A records from one answer, therefore it makes two queries for
+each name and not three.
+
+A run of three domains needed 159 seconds with version 1.0.1. The cause was 414
+DNS queries, one after the other.
+
+### More hostnames
+
+New check 3b. The tool can use two other programs. Each one is passive, and it
+sends no traffic to your hosts.
+
+- `subfinder` reads about 30 passive sources. The tool uses it if it is
+  installed. Use `--no-enrich` to stop this. Use `--enrich-all` to let subfinder
+  use each source. Some of those sources need an API key.
+- `theHarvester` searches for email addresses and hostnames. The tool uses it
+  only with the `--harvest` flag, because it sends many requests to search
+  engines.
+
+The tool keeps a name only if the name ends with your domain. Therefore a name
+from another domain cannot enter Check 4.
+
+### Nmap and other active scanners
+
+The tool does not scan a port, and it will not. Check 10 in `docs/CHECKS.md`
+gives the reason and tells you how to use Nmap yourself. In short: the tool
+stays passive, therefore it is safe to run on any name in your `domains.conf`
+file. Also, a shared address such as the mail service of a hosting company
+belongs to that company and not to you.
+
+### New result codes
+
+`RDAP-NO-SERVER`, `WHOIS-REDACTED`, `ENRICH-HOSTNAMES`, `ENRICH-ABSENT`,
+`HARVEST-EMAIL`, `HARVEST-UNREADABLE`.
+
+### Tests
+
+New file `tests/test-enrich.sh`, with 36 tests. It makes fake copies of `dig`,
+`subfinder`, and `theHarvester`, therefore it needs no network. It takes each
+function out of the tool with awk, therefore it reads the real code and not a
+copy of the code.
+
+Two of the faults above came from these tests and not from a run on a real
+domain: the file of one domain that became a result for the next domain, and the
+message about a timeout that became an address.
+
+The project now has 146 tests in three files.
+
 ## 1.0.1
 
 A run on three real domains found five faults. This version corrects them. Each

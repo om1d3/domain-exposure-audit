@@ -158,7 +158,8 @@ the smallest area that you can hide.
 | `EXPIRY-SOON` | The registration stops in fewer than 45 days. | MEDIUM | Renew the registration. |
 | `EXPIRED` | The registration stopped. | **HIGH** | Renew it now. Any person can register the domain and use your name. |
 | `RDAP-NOTFOUND` | The registry says that the domain has no registration. | LOW | Look for an error in the name, or the registration stopped. |
-| `RDAP-NO-SERVER` | RDAP has no server for this TLD, but WHOIS on port 43 shows a registration. Many ccTLDs are not in the IANA list. | MEDIUM | Read the WHOIS answer yourself. This run did not check your contact data. |
+| `RDAP-NO-SERVER` | RDAP has no server for this TLD, but WHOIS on port 43 shows a registration. Many ccTLDs are not in the IANA list. The tool reads the contact fields from WHOIS. | MEDIUM | Read the results for that WHOIS data. The same `PII-` codes apply. |
+| `WHOIS-REDACTED` | The tool read the contact fields from WHOIS on port 43, and it found no personal data. | LOW | Nothing. |
 
 ### The limits of this check
 
@@ -327,6 +328,67 @@ reason to operate a private authority for your internal hosts.
 
 ---
 
+## Check 3b — More hostnames from other programs
+
+### Purpose
+
+Find hostnames that Certificate Transparency does not give.
+
+### Why this is important
+
+Check 3 uses one service. A run on three real domains showed that crt.sh
+answered `000`, `404`, and `503`. Therefore the tool had no real hostnames for
+that run, and Check 4 used the word list only.
+
+The tool now tries crt.sh three times, then it tries a second service
+(CertSpotter). It can also use `subfinder`, which reads about 30 passive
+sources. One service that stops requests is then not a serious problem.
+
+### What the tool queries
+
+| Program | What it gives | Default |
+|---------|---------------|---------|
+| `subfinder` | Hostnames from about 30 passive sources | The tool uses it if it is installed. Use `--no-enrich` to stop this. |
+| `theHarvester` | Email addresses and hostnames from search engines | The tool uses it only with `--harvest`. |
+
+Each program is passive. It sends no traffic to your hosts.
+
+The tool keeps a name only if the name ends with your domain. It makes each name
+lowercase, and it removes a dot at the end. Therefore a name from another domain
+cannot enter Check 4.
+
+`subfinder` does not use a source that needs an API key, because the tool does
+not give it the `-all` option. Use `--enrich-all` to change this. Then subfinder
+reads the keys in its own configuration file.
+
+### The correct result
+
+```
+3b. More hostnames from other programs
+  subfinder found 6 name(s)
+```
+
+### The other possible results
+
+| Result | Meaning | Severity | Action |
+|--------|---------|----------|--------|
+| `ENRICH-HOSTNAMES` | The other programs found hostnames that Certificate Transparency does not hold. | LOW | Read the list in Check 4. Each name tells an attacker something. |
+| `ENRICH-ABSENT` | No program is installed. Certificate Transparency is the only source. | LOW | Install `subfinder`. Check 4 is then more reliable. |
+| `HARVEST-EMAIL` | A public search found an email address for your domain. | MEDIUM | [See the correction](REMEDIATION.md#harvest-email). |
+| `HARVEST-UNREADABLE` | theHarvester gave no file that the tool can read. | LOW | A search engine possibly stopped the requests. Run the tool again later. |
+
+### The limits of this check
+
+`theHarvester` sends many requests to search engines. A search engine can stop
+the requests, and then the program gives no data. Some of its sources need an
+API key. The results hold names of persons that are not correct, therefore a
+person must read them.
+
+`subfinder` reads passive sources. A source can be old. A name from this check
+can be a name that you removed some years before.
+
+---
+
 ## Check 4 — Hostnames and their addresses
 
 **This check answers the first question in the README.**
@@ -339,8 +401,15 @@ each address is a proxy, a data center, or a house.
 ### What the tool queries
 
 The tool makes a list of possible names. The list holds the apex name, each
-single name from Check 3, about 120 common names, and the names in your
-`--wordlist` file. The tool then queries `A` and `AAAA` for each name.
+single name from Check 3, each name from Check 3b, about 120 common names, and
+the names in your `--wordlist` file.
+
+The tool then queries `A` and `AAAA` for each name. It sends 8 queries at the
+same time. Use `--parallel N` to change the number. Use `--parallel 1` for one
+query at a time, which is slower but which uses less of your network.
+
+The tool reads the status and the `A` records from one answer. Therefore it makes
+two queries for each name and not three.
 
 For each address that it finds, the tool does these steps:
 
@@ -713,6 +782,56 @@ around them. Search for `site:<domain>`. Search for the domain name in the text
 sites and the stolen password lists.
 
 No program does this as well as a person who reads the results.
+
+---
+
+## Check 10 — Why this tool does not scan a port
+
+Nmap and other active scanners are not in this tool, and the tool will not add
+them. This section gives the reason, and it tells you how to use Nmap yourself.
+
+### Why the tool is passive
+
+Each check in this tool reads a public database, or it queries DNS. The tool
+sends no traffic to a host that it examines. This gives you three things:
+
+1. **You can run the tool on any domain, and it is safe.** The
+   `domains.conf` file holds a list of names. A wrong name in that file has no
+   effect. An active scanner pointed at a name that you do not own is a
+   different act.
+2. **You need no permission.** A port scan of a network can be against the rules
+   of your internet service provider, the rules of the network that you scan, or
+   the law of your country.
+3. **You do not scan another person.** Look at the results from a real run. The
+   address `217.70.178.4` is the shared mail service of a hosting company. Many
+   customers use it. A scan of that address is a scan of the company and of its
+   other customers, and not a scan of your server.
+
+### You already have the data
+
+Check 8 queries Shodan. Shodan gives the open ports and the text that each
+service sends, and you send no packet. Censys gives the same data. See
+[Check 9](#check-9--the-checks-that-a-person-must-do).
+
+### How to use Nmap yourself
+
+Use Nmap on a server that you own, from a network where you have permission.
+
+```bash
+# The addresses that Check 4 found, from the JSON output of the tool
+./domain-exposure-audit.sh --json example.com \
+  | jq -r '.hosts[] | select(.classification != "cloudflare") | (.a + .aaaa)[]' \
+  | sort -u > /tmp/my-addresses.txt
+
+# Read the file first. Remove each address that you do not own.
+cat /tmp/my-addresses.txt
+
+# The 1000 most common ports, with the service names
+sudo nmap -sS -sV --top-ports 1000 -iL /tmp/my-addresses.txt
+```
+
+Be careful. Read the file before you scan it. An address of a shared service
+belongs to your hosting company, and not to you.
 
 ---
 

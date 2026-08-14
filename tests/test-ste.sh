@@ -227,7 +227,7 @@ cd "$ROOT" || exit 1
 MD_FILES=(README.md CHANGELOG.md docs/CHECKS.md docs/REMEDIATION.md
           docs/STE-COMPLIANCE.md)
 SH_FILES=(domain-exposure-audit.sh lib/classify.sh tests/test-classify.sh
-          tests/test-parsing.sh tests/test-ste.sh
+          tests/test-parsing.sh tests/test-enrich.sh tests/test-ste.sh
           examples/notify-desktop.sh domains.conf.example
           examples/domain-exposure-audit.service examples/domain-exposure-audit.timer)
 

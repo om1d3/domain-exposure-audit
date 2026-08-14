@@ -349,6 +349,26 @@ an old file such as `.swp`, `.old`, `.bak`, or `phpinfo.php`, delete the file.
 Then add the file extension to the rules under [`HTTP-EXPOSED`](#http-exposed).
 The next old file is then not public.
 
+### `HARVEST-EMAIL`
+
+A public search found an email address for your domain. A program that reads
+search engines can find it, therefore a program that sends false messages can
+find it too.
+
+1. Find where the address is public. Search for the address in quotation marks.
+   Look at your own web pages, your `git` history, an old job advertisement, and
+   a message in a public mailing list.
+2. If the address is on your own site, replace it with a form or with an image.
+3. If the address is in a `git` history that you published, the address stays in
+   the history. Change your commit email to the private address of your git
+   service, then write the history again with `git filter-repo`.
+4. If you cannot remove the address, use a filter for the messages. Do not
+   delete the mailbox, because a person who needs to tell you about a security
+   fault needs an address.
+
+Note that this result is not about your domain records. The correction for
+`PII-EMAIL` does not help here. The address is public in another place.
+
 ### `RDAP-NO-SERVER`
 
 RDAP has no server for this TLD, but WHOIS on port 43 shows that the domain has
@@ -380,6 +400,10 @@ You must know about these results. For most of them, you do nothing.
 | Code | Note |
 |------|------|
 | `RDAP-NO-REGISTRANT` | This is the best result for a registration record. |
+| `WHOIS-REDACTED` | RDAP has no server for this TLD, and WHOIS on port 43 shows no personal data. This is a good result. |
+| `ENRICH-HOSTNAMES` | Another program found hostnames that Certificate Transparency does not hold. Read them in Check 4, and ask what each name tells an attacker. |
+| `ENRICH-ABSENT` | No program for more hostnames is installed. Install `subfinder`. Certificate Transparency often stops requests, therefore one source is a risk. |
+| `HARVEST-UNREADABLE` | theHarvester gave no file that the tool can read. A search engine possibly stopped the requests. Run the tool again later. |
 | `RDAP-REDACTED` | The redaction works. |
 | `RDAP-REGION` | ICANN rules make this necessary. No registrar and no TLD can hide it. The region is the smallest area that you can hide. |
 | `RDAP-COUNTRY` | The same as `RDAP-REGION`. |

@@ -46,6 +46,7 @@ Summary
 | 3 | Certificate Transparency | Which hostnames are in a permanent public log? |
 | 4 | Hostnames and addresses | Does a name point to an address outside the proxy? Who owns that network? |
 | 5 | HTTP paths and headers | Does a live host give source code, secrets, user names, or the name of my origin server? |
+| 3b | More hostnames | Do other passive sources know a hostname that the logs do not hold? |
 | 6 | Copies in the archive | Does the Wayback Machine hold a page with data that I removed? |
 | 7 | GPS data in images | Do the images on my site hold GPS data? |
 | 8 | Shodan records | Is a public scan database aware of my addresses? |
@@ -61,15 +62,25 @@ git clone <your-remote> domain-exposure-audit
 cd domain-exposure-audit
 chmod +x domain-exposure-audit.sh tests/*.sh examples/notify-desktop.sh
 ./tests/test-classify.sh          # 88 tests for the decision functions
-./tests/test-parsing.sh           # 22 tests for the data that servers send
+./tests/test-parsing.sh           # 26 tests for the data that servers send
+./tests/test-enrich.sh            # 36 tests for the other programs and DNS
 ./tests/test-ste.sh               # the language checker
 ```
 
 These three tools are necessary: `curl`, `jq`, and `dig`.
 
-These two tools are not necessary, but they add more checks. Install `whois` to
-find the owner of an IP address. This is the check that separates a data center
-from a house. Install `exiftool` to find GPS data in your images.
+These tools are not necessary, but they add more checks:
+
+| Tool | What it adds |
+|------|--------------|
+| `whois` | The owner of an IP address. This check separates a data center from a house. |
+| `exiftool` | GPS data in the images on your site. |
+| `subfinder` | Hostnames from about 30 passive sources. Certificate Transparency is then not the only source. |
+| `theHarvester` | Email addresses from search engines. Use the `--harvest` flag. |
+
+`subfinder` and `theHarvester` are not in each package system. Get `subfinder`
+from the ProjectDiscovery releases, or with `go install`. Get `theHarvester`
+from `pipx install theHarvester`.
 
 ```bash
 # Arch and CachyOS
@@ -219,7 +230,8 @@ and `domains.conf`. Do not remove these lines if the repository is public.
 domain-exposure-audit.sh    the tool
 lib/classify.sh             the decision functions. They use no network.
 tests/test-classify.sh      88 tests for lib/. No network.
-tests/test-parsing.sh       22 tests for RDAP and HTTP answers. No network.
+tests/test-parsing.sh       26 tests for RDAP and HTTP answers. No network.
+tests/test-enrich.sh        36 tests for DNS and the other programs. No network.
 tests/test-ste.sh           the ASD-STE100 language checker
 docs/CHECKS.md              each check: purpose, correct result, other results
 docs/REMEDIATION.md         each result code, and how to correct it
@@ -247,9 +259,13 @@ difference between an internet service provider and a data center. They test the
 IPv4 CIDR arithmetic at the limits of each range.
 
 The tests prove that the tool reads the answers of other servers correctly.
-There are 22 tests in `tests/test-parsing.sh`. They hold the real data from the
-run that found the faults in version 1.0.0. Three of them read the tool file and
-stop if the old code comes back.
+There are 26 tests in `tests/test-parsing.sh`. They hold the real data from the
+run that found the faults in version 1.0.0.
+
+The tests prove that the resolver and the other programs work. There are 36
+tests in `tests/test-enrich.sh`. That file makes fake copies of `dig`,
+`subfinder`, and `theHarvester`, therefore it needs no network. Seven of the
+tests read the tool file and stop if an old fault comes back.
 
 The tests prove that the tool has no syntax error. The command `bash -n` gives
 no error. The flag `--help` works. The tool gives the correct message when a
