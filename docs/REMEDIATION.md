@@ -349,6 +349,23 @@ an old file such as `.swp`, `.old`, `.bak`, or `phpinfo.php`, delete the file.
 Then add the file extension to the rules under [`HTTP-EXPOSED`](#http-exposed).
 The next old file is then not public.
 
+### `RDAP-NO-SERVER`
+
+RDAP has no server for this TLD, but WHOIS on port 43 shows that the domain has
+a registration. Many ccTLDs are not in the IANA RDAP list. The TLD `.la` is one
+example.
+
+This is a gap in the checks and not a result about your domain. The tool checked
+no contact data for this domain. Read the answer yourself:
+
+```bash
+whois example.la | grep -iE 'registrant|admin|street|city|postal|phone|email'
+```
+
+Look for a street, a city, a postal code, or a personal email address. If you
+find one, use the correction for
+[`PII-STREET`](#pii-street-pii-city-and-pii-postcode).
+
 ### `DNS-NO-NS`
 
 No `NS` record answers. The zone has a fault, or the domain has no registration.

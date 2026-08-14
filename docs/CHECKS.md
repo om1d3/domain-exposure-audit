@@ -158,6 +158,7 @@ the smallest area that you can hide.
 | `EXPIRY-SOON` | The registration stops in fewer than 45 days. | MEDIUM | Renew the registration. |
 | `EXPIRED` | The registration stopped. | **HIGH** | Renew it now. Any person can register the domain and use your name. |
 | `RDAP-NOTFOUND` | The registry says that the domain has no registration. | LOW | Look for an error in the name, or the registration stopped. |
+| `RDAP-NO-SERVER` | RDAP has no server for this TLD, but WHOIS on port 43 shows a registration. Many ccTLDs are not in the IANA list. | MEDIUM | Read the WHOIS answer yourself. This run did not check your contact data. |
 
 ### The limits of this check
 
@@ -350,6 +351,11 @@ For each address that it finds, the tool does these steps:
    `whois`. It gets the text description of the network.
 3. It puts the network in one group: `datacenter`, `consumer`, `home-hint`, or
    `unknown`.
+
+The tool asks the RIR about each address one time only, and it keeps the answer
+for the run. It also writes one result for each address, and not one result for
+each pair of a hostname and an address. Five hostnames that share two addresses
+give two results, and not ten. The screen shows each hostname.
 
 The names from Certificate Transparency come first, and the word list comes
 second. This order is important. The names from the log are real. The names from

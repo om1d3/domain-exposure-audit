@@ -111,6 +111,29 @@ assert_false "ipv6 passed to v4 -> reject" in_cidr4 2606:4700::1 1.2.3.0/24
 # A home IP address that the tool must never put in a Cloudflare range.
 assert_false "86.120.x.x not in any CF /13" in_cidr4 86.120.44.7 104.16.0.0/13
 
+# ---------------------------------------------------------------------------
+# Tests for the faults that version 1.0.1 corrected. Each test holds the real
+# data from the run that found the fault.
+# ---------------------------------------------------------------------------
+
+printf '\n\033[1mv1.0.1 — Gandi and other hosts must be a data center\033[0m\n'
+# A run on three real domains gave 10 wrong ORIGIN-UNKNOWN results, because the
+# word list had no entry for Gandi.
+assert_eq "Gandi -> data center"      datacenter "$(classify_network 'GANDI SAS')"
+assert_eq "Gandi network name"        datacenter "$(classify_network 'GANDI-HOSTING / FR-GANDI-20101008')"
+assert_eq "Infomaniak -> data center" datacenter "$(classify_network 'Infomaniak Network SA')"
+assert_eq "Strato -> data center"     datacenter "$(classify_network 'STRATO AG')"
+assert_eq "Exoscale -> data center"   datacenter "$(classify_network 'Exoscale / Akenes SA')"
+assert_eq "Host Europe -> data center" datacenter "$(classify_network 'Host Europe GmbH')"
+
+printf '\n\033[1mv1.0.1 — an empty WHOIS field is redacted, not real data\033[0m\n'
+# The old check for WHOIS on port 43 inverted a text search. An empty field did
+# not match a placeholder pattern, therefore the tool reported it as public.
+# This gave a wrong HIGH result. is_redacted must accept each empty form.
+for v in "" " " "  " "-" "--" "n/a" "N/A" "NA" "none" "None" "null" "." ","; do
+  assert_true "'$v' is redacted" is_redacted "$v"
+done
+
 printf '\n\033[1mv6_prefix\033[0m\n'
 assert_eq "full address"     "2606:4700" "$(v6_prefix 2606:4700:3033::6815:1)"
 assert_eq "compressed"       "2606:4700" "$(v6_prefix 2606:4700::1)"

@@ -60,7 +60,8 @@ correct result, and each other possible result.
 git clone <your-remote> domain-exposure-audit
 cd domain-exposure-audit
 chmod +x domain-exposure-audit.sh tests/*.sh examples/notify-desktop.sh
-./tests/test-classify.sh          # 69 tests, no network
+./tests/test-classify.sh          # 88 tests for the decision functions
+./tests/test-parsing.sh           # 22 tests for the data that servers send
 ./tests/test-ste.sh               # the language checker
 ```
 
@@ -217,7 +218,8 @@ and `domains.conf`. Do not remove these lines if the repository is public.
 ```
 domain-exposure-audit.sh    the tool
 lib/classify.sh             the decision functions. They use no network.
-tests/test-classify.sh      69 tests for lib/. No network.
+tests/test-classify.sh      88 tests for lib/. No network.
+tests/test-parsing.sh       22 tests for RDAP and HTTP answers. No network.
 tests/test-ste.sh           the ASD-STE100 language checker
 docs/CHECKS.md              each check: purpose, correct result, other results
 docs/REMEDIATION.md         each result code, and how to correct it
@@ -239,10 +241,15 @@ without a live query.
 
 This section tells you what the tests prove and what they do not prove.
 
-The tests prove that `lib/classify.sh` is correct. There are 69 tests, and all
-69 pass. They test the placeholder text of real registrars. They test the
+The tests prove that `lib/classify.sh` is correct. There are 88 tests, and all
+88 pass. They test the placeholder text of real registrars. They test the
 difference between an internet service provider and a data center. They test the
 IPv4 CIDR arithmetic at the limits of each range.
+
+The tests prove that the tool reads the answers of other servers correctly.
+There are 22 tests in `tests/test-parsing.sh`. They hold the real data from the
+run that found the faults in version 1.0.0. Three of them read the tool file and
+stop if the old code comes back.
 
 The tests prove that the tool has no syntax error. The command `bash -n` gives
 no error. The flag `--help` works. The tool gives the correct message when a

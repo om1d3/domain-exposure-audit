@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 PROGNAME="${0##*/}"
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,20 @@ fetch() {
   local url="$1" out="$2" accept="${3:-*/*}"
   curl -sS -L --max-time "$DEA_TIMEOUT" \
        -A "$DEA_USER_AGENT" -H "Accept: $accept" \
-       -o "$out" -w '%{http_code}' "$url" 2>/dev/null || printf '000'
+       -o "$out" -w '%{http_code}' "$url" 2>/dev/null
+  # curl writes the code and also stops with a code that is not 0 when the
+  # connection fails. Do not add a second value here. See http_code().
+}
+
+# http_code COMMAND... -> the HTTP code, or 000 if there was no answer
+# The function gives one value only. An empty answer becomes 000.
+http_code() {
+  local out
+  out="$("$@" 2>/dev/null)"
+  case "$out" in
+    ""|*[!0-9]*) printf '000' ;;
+    *)           printf '%s' "${out: -3}" ;;
+  esac
 }
 
 # cache_fetch URL OUTFILE MAX_AGE_HOURS [accept]
@@ -348,9 +361,22 @@ is_cloudflare_ip() {
   esac
 }
 
+# The tool keeps the RIR answer for each address. Many hostnames share one
+# address, therefore this prevents a second whois query for the same address.
+declare -A IP_DESC_CACHE=()
+declare -A IP_RESULT_DONE=()
+
 # ip_network_desc IP -> the organization name and the network name from the RIR
 ip_network_desc() {
   [ "$HAVE_WHOIS" -eq 1 ] || { printf ''; return; }
+  if [ -n "${IP_DESC_CACHE[$1]+x}" ]; then printf '%s' "${IP_DESC_CACHE[$1]}"; return; fi
+  local d
+  d="$(_ip_network_desc_query "$1")"
+  IP_DESC_CACHE[$1]="$d"
+  printf '%s' "$d"
+}
+
+_ip_network_desc_query() {
   whois "$1" 2>/dev/null \
     | grep -iE '^(orgname|org-name|organization|netname|descr|owner|customer):' \
     | head -3 | cut -d: -f2- | tr -s ' \t' ' ' | sed 's/^ //' \
@@ -398,7 +424,17 @@ check_registration() {
   fi
 
   case "$code" in
-    404) add_result LOW RDAP-NOTFOUND "The registry says that this domain has no registration."
+    404) # A 404 has two possible meanings. The domain has no registration, or
+         # the RDAP server does not hold this TLD. Many ccTLDs are not in the
+         # IANA list. Ask WHOIS on port 43 before the tool decides.
+         if [ "$HAVE_WHOIS" -eq 1 ] && \
+            timeout "$DEA_TIMEOUT" whois "$domain" 2>/dev/null \
+            | grep -qiE 'registrar|registrant|creation date|registry domain id'; then
+           add_result MEDIUM RDAP-NO-SERVER "RDAP has no server for .$tld, but WHOIS on port 43 shows a registration. Read the WHOIS answer yourself. This run did not check your contact data."
+           say "  RDAP has no server for .$tld. WHOIS on port 43 answers."
+         else
+           add_result LOW RDAP-NOTFOUND "The registry says that this domain has no registration."
+         fi
          printf '{"registered":false}' > "$WORK/registration.json"; return ;;
     2*)  : ;;
     *)   add_result MEDIUM RDAP-HTTP "The registry RDAP server gave the HTTP code $code. The registration data from this run is not reliable." ;;
@@ -495,15 +531,21 @@ check_registration() {
     add_result LOW RDAP-COUNTRY "RDAP shows this country: $country. ICANN rules make this necessary."
 
   # --- lock status and expiry ---
-  local statuses expiry
+  local statuses statuses_flat expiry
   statuses="$(jq -r '(.status // [])[]' "$src" 2>/dev/null | sort -u | paste -sd, -)"
   say "  status: ${statuses:-the registry publishes no status}"
-  case "$statuses" in
-    *clientTransferProhibited*) : ;;
+
+  # RFC 9083 writes a status in lowercase with spaces, for example
+  # "client transfer prohibited". The EPP name for the same status is
+  # "clientTransferProhibited". The tool removes the spaces and makes the text
+  # lowercase, therefore it can compare the two forms.
+  statuses_flat="$(printf '%s' "$statuses" | tr -d ' _-' | lc)"
+  case "$statuses_flat" in
+    *clienttransferprohibited*|*servertransferprohibited*) : ;;
     *) add_result MEDIUM NO-TRANSFER-LOCK "The status clientTransferProhibited is absent. A person can move your domain to another registrar more easily." ;;
   esac
-  case "$statuses" in
-    *clientUpdateProhibited*|*serverUpdateProhibited*) : ;;
+  case "$statuses_flat" in
+    *clientupdateprohibited*|*serverupdateprohibited*) : ;;
     *) add_result LOW NO-UPDATE-LOCK "The status clientUpdateProhibited is absent. A person can change your contact data without a second step." ;;
   esac
 
@@ -530,8 +572,12 @@ check_registration() {
       say "  WHOIS on port 43: stopped for .$tld. This is correct after January 2025."
     elif grep -qiE 'registrant|registry domain id' "$w" 2>/dev/null; then
       say "  WHOIS on port 43: the service answers"
-      if grep -iE '^[[:space:]]*(registrant|admin) (street|city|postal)' "$w" \
-         | cut -d: -f2- | grep -qvE "$REDACTION_PATTERNS" 2>/dev/null; then
+      local w43_field w43_value w43_pii=0
+      while IFS= read -r w43_field; do
+        w43_value="$(printf '%s' "$w43_field" | cut -d: -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        is_redacted "$w43_value" || w43_pii=1
+      done < <(grep -iE '^[[:space:]]*(registrant|admin|tech)[[:space:]]*(street|city|postal ?code|state|province)' "$w" 2>/dev/null)
+      if [ "$w43_pii" -eq 1 ]; then
         add_result HIGH WHOIS43-PII "The old WHOIS service on port 43 shows address fields, but RDAP hides them. The two services do not agree."
       fi
     fi
@@ -762,24 +808,29 @@ check_hosts() {
         cls="$(classify_network "$desc")"
         networks="$networks${networks:+; }$desc"
         origin_count=$((origin_count + 1))
+        # The tool writes a result for an address one time only. It shows each
+        # hostname on the screen, but the result names the address.
+        local first_for_ip=1
+        [ -n "${IP_RESULT_DONE[$ip]+x}" ] && first_for_ip=0
+        IP_RESULT_DONE[$ip]=1
         case "$cls" in
           consumer|home-hint)
             host_cls="home"
             say "    $(c red '!') $host -> $ip $(c red "[$cls: ${desc:-the RIR gives no description}]")"
-            add_result HIGH ORIGIN-RESIDENTIAL "$host points to $ip. This network is a home internet service: ${desc:-the RIR gives no description}. An attacker can find your house from this IP address. The address does not use a proxy."
+            [ "$first_for_ip" -eq 1 ] && add_result HIGH ORIGIN-RESIDENTIAL "The address $ip is a home internet service. One hostname or more points to it, for example $host. The network is: ${desc:-the RIR gives no description}. An attacker can find your house from this IP address. The address does not use a proxy."
             ;;
           datacenter)
             [ "$host_cls" = "cloudflare" ] && host_cls="datacenter"
             say "    $(c yellow '·') $host -> $ip $(c dim "[data center: ${desc}]")"
-            add_result LOW ORIGIN-DATACENTER "$host points to $ip at ${desc}. This is not a home address. It is your origin server, and it does not use a proxy."
+            [ "$first_for_ip" -eq 1 ] && add_result LOW ORIGIN-DATACENTER "The address $ip is at ${desc}. One hostname or more points to it, for example $host. This is not a home address. It is your origin server, and it does not use a proxy."
             ;;
           *)
             [ "$host_cls" = "cloudflare" ] && host_cls="unknown"
             say "    $(c yellow '?') $host -> $ip $(c yellow '[the tool cannot classify this network]')"
-            if [ "$HAVE_WHOIS" -eq 1 ]; then
-              add_result MEDIUM ORIGIN-UNKNOWN "$host points to $ip. The RIR description of this network is not clear. Check the network yourself. It can be a data center or a home."
-            else
-              add_result MEDIUM ORIGIN-NOWHOIS "$host points to $ip. This address is not in the Cloudflare ranges. The whois tool is absent, therefore the tool cannot find the owner of the network. Install whois."
+            if [ "$HAVE_WHOIS" -eq 1 ] && [ "$first_for_ip" -eq 1 ]; then
+              add_result MEDIUM ORIGIN-UNKNOWN "The address $ip has no clear RIR description. One hostname or more points to it, for example $host. Check the network yourself. It can be a data center or a home."
+            elif [ "$first_for_ip" -eq 1 ]; then
+              add_result MEDIUM ORIGIN-NOWHOIS "The address $ip is not in the Cloudflare ranges. One hostname or more points to it, for example $host. The whois tool is absent, therefore the tool cannot find the owner of the network. Install whois."
             fi
             ;;
         esac
@@ -819,7 +870,7 @@ SENSITIVE_PATHS=(
 
 check_http() {
   local domain="$1"
-  head1 "5. HTTP surface"
+  head1 "5. HTTP paths and headers"
 
   if [ "$DO_HTTP" -eq 0 ]; then
     say "  The tool did not run this check. You used --no-http."; printf '[]' > "$WORK/http.json"; return
@@ -835,8 +886,8 @@ check_http() {
   while IFS= read -r host; do
     [ -n "$host" ] || continue
     hdrs="$WORK/hdr.txt"
-    code="$(curl -skI --max-time "$DEA_TIMEOUT" -A "$DEA_USER_AGENT" \
-            -o "$hdrs" -w '%{http_code}' "https://$host" 2>/dev/null || printf '000')"
+    code="$(http_code curl -skI --max-time "$DEA_TIMEOUT" -A "$DEA_USER_AGENT" \
+            -o "$hdrs" -w '%{http_code}' "https://$host")"
     if [ "$code" = "000" ]; then
       say "  $host  gives no HTTPS answer"
       jq -n --arg h "$host" '{host: $h, code: 0, server: "", exposed: []}' >> "$WORK/http.ndjson"
@@ -858,8 +909,8 @@ check_http() {
     exposed=""
     for p in "${SENSITIVE_PATHS[@]}"; do
       local pc
-      pc="$(curl -sk -o /dev/null --max-time 10 -A "$DEA_USER_AGENT" \
-            -w '%{http_code}' "https://$host$p" 2>/dev/null || printf '000')"
+      pc="$(http_code curl -sk -o /dev/null --max-time 10 -A "$DEA_USER_AGENT" \
+            -w '%{http_code}' "https://$host$p")"
       case "$p:$pc" in
         /robots.txt:200|/sitemap.xml:200|/.well-known/security.txt:200|/humans.txt:200)
           say "    $(c dim "$p -> $pc. This path is public for a good reason.")" ;;
@@ -1142,6 +1193,8 @@ audit_domain() {
   mkdir -p "$sdir"
 
   R_FILE="$WORK/results.tsv"
+  IP_DESC_CACHE=()
+  IP_RESULT_DONE=()
   : > "$R_FILE"
   : > "$WORK/ct-plain.txt"
 

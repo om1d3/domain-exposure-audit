@@ -224,9 +224,11 @@ printf '\n%s\n' "$(dim 'ASD-STE100 check — see docs/STE-COMPLIANCE.md for the 
 
 cd "$ROOT" || exit 1
 
-MD_FILES=(README.md docs/CHECKS.md docs/REMEDIATION.md docs/STE-COMPLIANCE.md)
+MD_FILES=(README.md CHANGELOG.md docs/CHECKS.md docs/REMEDIATION.md
+          docs/STE-COMPLIANCE.md)
 SH_FILES=(domain-exposure-audit.sh lib/classify.sh tests/test-classify.sh
-          tests/test-ste.sh examples/notify-desktop.sh domains.conf.example
+          tests/test-parsing.sh tests/test-ste.sh
+          examples/notify-desktop.sh domains.conf.example
           examples/domain-exposure-audit.service examples/domain-exposure-audit.timer)
 
 for f in "${MD_FILES[@]}"; do
