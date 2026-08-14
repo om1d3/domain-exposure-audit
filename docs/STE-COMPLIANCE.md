@@ -89,6 +89,11 @@ language. Therefore the code keeps names such as `DEA_STATE_DIR`.
 - Do not use `&`. Use `and`.
 - Do not use contractions. Write `do not` and not `don't`.
 - Do not use `e.g.` or `i.e.`. Use `for example` and `that is`.
+- Do not use the em-dash. Not in a heading, not in a table, not in a sentence.
+- Use the en-dash only as a separator after a title or a heading, for example
+  `Check 1 – Registration data`. A dash inside a sentence hides the
+  relationship between the two parts of the sentence. Use a comma, use a colon,
+  or write two sentences.
 
 ---
 
@@ -113,6 +118,7 @@ Section 1, Rule 1.5.
 `log`, `snapshot`, `baseline`, `result`, `severity`, `IP address`,
 `network`, `port`, `header`, `path`, `secret`, `credential`, `archive`,
 `metadata`, `coordinate`, `attacker`, `proxy`, `origin`, `origin server`,
+`relay address`,
 `data center`, `home internet service`, `bitmask`, `exit code`, `timer`
 
 ### Names of protocols, formats, and software
@@ -285,6 +291,11 @@ The checker tests these rules:
 | No complex tenses | 3.5 |
 | No removed words from Section 5 | 1.1 |
 | No `e.g.`, `i.e.`, or `&` | Punctuation |
+| No em-dash, in any place | Punctuation |
+| No en-dash inside a sentence | Punctuation |
+
+The check for the en-dash ignores the text between two backticks. Such text is a
+quotation of an example, and not punctuation in a sentence.
 | Descriptive sentences have 25 words or fewer | 4.2 |
 | Paragraphs have 6 sentences or fewer | 4.5 |
 

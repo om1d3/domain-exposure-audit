@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-ste.sh — check this project against ASD-STE100 Simplified
+# tests/test-ste.sh – check this project against ASD-STE100 Simplified
 # Technical English.
 #
 # The checker tests the rules that a program can test. It cannot test the full
@@ -28,6 +28,11 @@ SHOW_NOTES=0
 
 FAILS=0
 NOTES=0
+
+# The bytes of the two dash characters, in UTF-8. printf with an octal escape
+# gives the same bytes in each locale.
+EM_DASH="$(printf '\342\200\224')"
+EN_DASH="$(printf '\342\200\223')"
 
 red()   { printf '\033[31m%s\033[0m' "$1"; }
 yell()  { printf '\033[33m%s\033[0m' "$1"; }
@@ -188,6 +193,47 @@ check_sentence_length() { # check_sentence_length FILE LINENO TEXT
   done
 }
 
+# check_dashes FILE
+# The em-dash is not permitted in this project. See docs/STE-COMPLIANCE.md.
+# This function reads each raw line, and not the prose only. A heading can hold
+# a dash, therefore a check of the prose does not find it.
+check_dashes() {
+  local f="$1" n line off=0
+  n=0
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$line" in
+      *'ste-check: off'*) off=1; continue ;;
+      *'ste-check: on'*)  off=0; continue ;;
+    esac
+    [ "$off" -eq 1 ] && continue
+
+    # Rule: no em-dash, in any place.
+    case "$line" in
+      *"$EM_DASH"*) fail "$f" "$n" "punctuation: the em-dash is not permitted" \
+                      "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-100)" ;;
+    esac
+
+    # Rule: an en-dash is a separator in a title or a heading only. A line that
+    # ends with a full stop is a sentence. A dash in a sentence hides the
+    # relationship between the two parts. Use a comma, a colon, or two
+    # sentences.
+    #
+    # A dash between two backticks is a quotation of an example, and not
+    # punctuation in a sentence. Therefore the check removes the text between
+    # backticks first.
+    local bare
+    bare="$(printf '%s' "$line" | sed 's/`[^`]*`//g')"
+    case "$bare" in
+      *"$EN_DASH"*)
+        case "$(printf '%s' "$bare" | sed 's/[[:space:]]*$//')" in
+          *.) fail "$f" "$n" "punctuation: no en-dash inside a sentence" \
+                "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-100)" ;;
+        esac ;;
+    esac
+  done < "$f"
+}
+
 check_paragraphs() { # check_paragraphs FILE
   local f="$1"
   awk '
@@ -220,7 +266,7 @@ check_paragraphs() { # check_paragraphs FILE
 # Main
 # ---------------------------------------------------------------------------
 
-printf '\n%s\n' "$(dim 'ASD-STE100 check — see docs/STE-COMPLIANCE.md for the rules applied')"
+printf '\n%s\n' "$(dim 'ASD-STE100 check – see docs/STE-COMPLIANCE.md for the rules applied')"
 
 cd "$ROOT" || exit 1
 
@@ -239,6 +285,7 @@ for f in "${MD_FILES[@]}"; do
     [ "$kind" = "prose" ] && check_sentence_length "$f" "$n" "$text"
   done < <(extract_md "$f")
   check_paragraphs "$f"
+  check_dashes "$f"
 done
 
 for f in "${SH_FILES[@]}"; do
@@ -248,6 +295,7 @@ for f in "${SH_FILES[@]}"; do
     check_words "$f" "$n" "$text"
     [ "$kind" = "prose" ] && check_sentence_length "$f" "$n" "$text"
   done < <(extract_sh "$f")
+  check_dashes "$f"
 done
 
 printf '\n'

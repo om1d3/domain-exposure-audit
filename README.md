@@ -58,14 +58,19 @@ correct result, and each other possible result.
 ## Installation
 
 ```bash
-git clone <your-remote> domain-exposure-audit
+git clone https://github.com/om1d3/domain-exposure-audit.git
 cd domain-exposure-audit
 chmod +x domain-exposure-audit.sh tests/*.sh examples/notify-desktop.sh
-./tests/test-classify.sh          # 88 tests for the decision functions
-./tests/test-parsing.sh           # 26 tests for the data that servers send
+./tests/test-classify.sh          # 114 tests for the decision functions
+./tests/test-parsing.sh           # 22 tests for the data that servers send
 ./tests/test-enrich.sh            # 36 tests for the other programs and DNS
 ./tests/test-ste.sh               # the language checker
 ```
+
+This GitHub repository is a copy, and it is read only. Another server holds the
+source of truth, and that server sends each change here with a force push.
+Therefore a commit that you make here is lost at the next copy. A pull request
+here cannot go into the project. Please write an issue instead.
 
 These three tools are necessary: `curl`, `jq`, and `dig`.
 
@@ -144,7 +149,7 @@ The exit code is a bitmask. One number can show you more than one result.
 
 | Bit | Value | Meaning |
 |-----|-------|---------|
-| — | 0 | No results, and no change. |
+| none | 0 | No results, and no change. |
 | 0 | 1 | The tool found MEDIUM results. |
 | 1 | 2 | The tool found HIGH results. |
 | 2 | 4 | The tool found a change from the baseline. |
@@ -229,8 +234,8 @@ and `domains.conf`. Do not remove these lines if the repository is public.
 ```
 domain-exposure-audit.sh    the tool
 lib/classify.sh             the decision functions. They use no network.
-tests/test-classify.sh      88 tests for lib/. No network.
-tests/test-parsing.sh       26 tests for RDAP and HTTP answers. No network.
+tests/test-classify.sh      114 tests for lib/. No network.
+tests/test-parsing.sh       22 tests for RDAP and HTTP answers. No network.
 tests/test-enrich.sh        36 tests for DNS and the other programs. No network.
 tests/test-ste.sh           the ASD-STE100 language checker
 docs/CHECKS.md              each check: purpose, correct result, other results
@@ -253,13 +258,13 @@ without a live query.
 
 This section tells you what the tests prove and what they do not prove.
 
-The tests prove that `lib/classify.sh` is correct. There are 88 tests, and all
-88 pass. They test the placeholder text of real registrars. They test the
+The tests prove that `lib/classify.sh` is correct. There are 114 tests, and all
+114 pass. They test the placeholder text of real registrars. They test the
 difference between an internet service provider and a data center. They test the
 IPv4 CIDR arithmetic at the limits of each range.
 
 The tests prove that the tool reads the answers of other servers correctly.
-There are 26 tests in `tests/test-parsing.sh`. They hold the real data from the
+There are 22 tests in `tests/test-parsing.sh`. They hold the real data from the
 run that found the faults in version 1.0.0.
 
 The tests prove that the resolver and the other programs work. There are 36
@@ -321,6 +326,19 @@ Run the tool from a network that is not your own network, if you can. On your
 home network, a local resolver, a Pi-hole, or Tailscale can give a different
 answer. The public internet gets the other answer. This difference is the fault
 that the tool must find.
+
+## How to send a change
+
+This GitHub repository is a copy. Another server holds the source of truth, and
+the copy happens with a force push. Therefore this repository cannot accept a
+pull request, and a commit that you make here is lost.
+
+Write an issue. Put a patch in the issue if you have one, for example the output
+of `git format-patch`. Each change must keep these two rules:
+
+- The four test files must pass. Run them before you write the issue.
+- The text must follow ASD-STE100. Run `./tests/test-ste.sh`. See
+  [docs/STE-COMPLIANCE.md](docs/STE-COMPLIANCE.md).
 
 ## Licence
 

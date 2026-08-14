@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# domain-exposure-audit — a tool that finds the public data about your domains
+# domain-exposure-audit – a tool that finds the public data about your domains
 #
 # The tool answers two questions each time you run it:
 #   1. What can an unknown person find out about you from this domain today?
@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 PROGNAME="${0##*/}"
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ PROGNAME="${0##*/}"
 : "${DEA_REPORT_DIR:=$DEA_STATE_DIR/reports}"
 : "${DEA_CONFIG:=}"
 : "${DEA_TIMEOUT:=20}"
-: "${DEA_CT_CACHE_HOURS:=6}"
+: "${DEA_CT_CACHE_HOURS:=168}"
 : "${DEA_PARALLEL:=8}"
 : "${DEA_HARVEST_SOURCES:=bing,duckduckgo,crtsh,otx,urlscan,rapiddns}"
 : "${DEA_NOTIFY_CMD:=}"
@@ -100,7 +100,7 @@ die()  { printf '%s %s\n' "$(c red '[fatal]')" "$*" >&2; exit 8; }
 
 usage() {
   cat <<EOF
-$PROGNAME $VERSION — find the public data about domains that you own
+$PROGNAME $VERSION – find the public data about domains that you own
 
 USAGE
   $PROGNAME [options] [domain ...]
@@ -382,6 +382,11 @@ is_cloudflare_ip() {
 # address, therefore this prevents a second whois query for the same address.
 declare -A IP_DESC_CACHE=()
 declare -A IP_RESULT_DONE=()
+# The addresses of each network, and the group of each network. The tool writes
+# one result for each network, and not one result for each address.
+declare -A NET_ADDRS=()
+declare -A NET_CLASS=()
+declare -A NET_HOST=()
 
 # ip_network_desc IP -> the organization name and the network name from the RIR
 ip_network_desc() {
@@ -397,11 +402,11 @@ _ip_network_desc_query() {
   whois "$1" 2>/dev/null \
     | grep -iE '^(orgname|org-name|organization|netname|descr|owner|customer):' \
     | head -3 | cut -d: -f2- | tr -s ' \t' ' ' | sed 's/^ //' \
-    | tr '\n' ';' | sed 's/;$//' | cut -c1-200
+    | tr '\n' ';' | sed 's/;$//; s/;/; /g' | cut -c1-200
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 1 — Registration data (RDAP, with port-43 WHOIS as fallback)
+# CHECK 1 – Registration data (RDAP, with port-43 WHOIS as fallback)
 # ---------------------------------------------------------------------------
 
 rdap_base_for_tld() {
@@ -483,7 +488,12 @@ assess_contact() {
       esac
       ;;
     email)
-      if ! is_redacted "$value"; then
+      if is_relay_email "$value"; then
+        # The registrar publishes its own relay address. This is the
+        # correct condition, therefore the tool writes a LOW result to show
+        # that it made the check.
+        AC_RELAY=1
+      elif ! is_redacted "$value"; then
         add_result MEDIUM PII-EMAIL "$source shows the email address of the $roles. Programs will collect it. You will get false messages about your domain."
         AC_PII=1
       fi
@@ -555,7 +565,7 @@ check_registration() {
   code="$(fetch "$url" "$reg" 'application/rdap+json')"
   say "  registry RDAP  $url  -> $code"
 
-  AC_PII=0; AC_REGION=""; AC_COUNTRY=""
+  AC_PII=0; AC_RELAY=0; AC_REGION=""; AC_COUNTRY=""
 
   # The tool reads the HTTP code first. An RDAP server that does not hold a TLD
   # answers 404, and the body of that answer is often not JSON. Therefore a test
@@ -565,8 +575,9 @@ check_registration() {
       # A 404 has two possible meanings. The domain has no registration, or the
       # RDAP server does not hold this TLD. The tool asks WHOIS on port 43.
       if check_registration_whois "$domain"; then
-        add_result MEDIUM RDAP-NO-SERVER "RDAP has no server for .$tld. WHOIS on port 43 answers, therefore the domain has a registration. The tool read the contact fields from WHOIS."
+        add_result LOW RDAP-NO-SERVER "RDAP has no server for .$tld. WHOIS on port 43 answers, therefore the domain has a registration. The tool read the contact fields from WHOIS, therefore this check is complete."
         say "  RDAP has no server for .$tld. The tool reads WHOIS on port 43."
+        [ "$AC_RELAY" -eq 1 ] && add_result LOW RELAY-EMAIL "The registration record holds a relay address from your registrar, and not your own address. A message to that address goes to you. This is the correct condition."
         if [ "$AC_PII" -eq 0 ]; then
           add_result LOW WHOIS-REDACTED "WHOIS on port 43 shows no personal data in the contact fields."
         fi
@@ -642,6 +653,7 @@ check_registration() {
     add_result LOW RDAP-REDACTED "RDAP shows a registrant record. All the personal fields hold redacted data."
   fi
 
+  [ "$AC_RELAY" -eq 1 ] && add_result LOW RELAY-EMAIL "The registration record holds a relay address from your registrar, and not your own address. A message to that address goes to you. This is the correct condition."
   [ -n "$AC_REGION" ] && ! is_redacted "$AC_REGION" && \
     add_result LOW RDAP-REGION "RDAP shows this region: $AC_REGION. ICANN rules make this necessary. No registrar can hide it."
   [ -n "$AC_COUNTRY" ] && ! is_redacted "$AC_COUNTRY" && \
@@ -715,7 +727,7 @@ check_registration() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 2 — DNS posture
+# CHECK 2 – DNS posture
 # ---------------------------------------------------------------------------
 
 check_dns() {
@@ -806,7 +818,7 @@ check_dns() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 3 — Certificate Transparency
+# CHECK 3 – Certificate Transparency
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -825,8 +837,9 @@ enrich_subfinder() {
   local domain="$1"
   # -silent gives the names only. The tool does not use -all, because -all uses
   # the sources that need an API key.
+  # -disable-update-check stops one request to the servers of the program.
   timeout "$(( DEA_TIMEOUT * 6 ))" subfinder -d "$domain" -silent \
-    -timeout 10 ${ENRICH_ALL:+-all} 2>/dev/null \
+    -timeout 10 -disable-update-check ${ENRICH_ALL:+-all} 2>/dev/null \
     | tr '[:upper:]' '[:lower:]' \
     | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//' \
     | grep -E "^[a-z0-9._-]+\.${domain//./\\.}$" \
@@ -883,7 +896,10 @@ check_enrich() {
   [ "$DO_ENRICH" -eq 1 ] && need subfinder && have_any=1
   [ "$DO_HARVEST" -eq 1 ] && need theHarvester && have_any=1
   if [ "$have_any" -eq 0 ]; then
-    add_result LOW ENRICH-ABSENT "No program for more hostnames is installed. Certificate Transparency is the only source of real hostnames, and that service often stops requests. Install subfinder to make Check 4 more reliable."
+    # This is a message and not a result. It describes the programs on your
+    # computer, and not the public data about your domain. A result would make a
+    # change in the list of results each time you install or remove a program.
+    say "$(c dim "  No program for more hostnames is installed. Install subfinder to make Check 4 more reliable.")"
     printf '{"used":[],"names":0}' > "$WORK/enrich.json"
     return
   fi
@@ -920,12 +936,23 @@ check_enrich() {
 
   # Which names did the other programs find that Certificate Transparency did
   # not? This is the value that the enrichment adds.
-  if [ "$total" -gt 0 ] && [ -s "$WORK/ct-plain.txt" ]; then
-    local only
-    only="$(comm -23 "$WORK/enrich-names.txt" <(sort -u "$WORK/ct-plain.txt") 2>/dev/null | grep -c . || true)"
-    [ "$only" -gt 0 ] && add_result LOW ENRICH-HOSTNAMES "The other programs found $only hostname(s) that Certificate Transparency does not hold. Read the list in Check 4."
-  elif [ "$total" -gt 0 ]; then
-    add_result LOW ENRICH-HOSTNAMES "The other programs found $total hostname(s). Certificate Transparency gave no data this run, therefore these names are the only source."
+  # The tool names each hostname in the result. A name that does not point to
+  # an address is absent from Check 4, therefore a result with a number only
+  # hides the names that tell an attacker which software you use.
+  if [ "$total" -gt 0 ]; then
+    local only_list only_n
+    if [ -s "$WORK/ct-plain.txt" ]; then
+      only_list="$(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$WORK/enrich-names.txt") \
+                                     <(LC_ALL=C sort -u "$WORK/ct-plain.txt") 2>/dev/null || true)"
+    else
+      only_list="$(cat "$WORK/enrich-names.txt")"
+    fi
+    only_n="$(printf '%s' "$only_list" | grep -c . || true)"
+    if [ "$only_n" -gt 0 ]; then
+      add_result LOW ENRICH-HOSTNAMES "The other programs found $only_n hostname(s) that Certificate Transparency does not hold: $(printf '%s' "$only_list" | tr '\n' ' ' | sed 's/ $//' | cut -c1-300). Such a name can tell an attacker which software you use. A name is in this list even if it points to no address."
+      local nm
+      while IFS= read -r nm; do [ -n "$nm" ] && say "    $nm"; done <<< "$only_list"
+    fi
   fi
 
   jq -n --argjson names "$total" \
@@ -958,7 +985,7 @@ check_ct() {
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
       break
     fi
-    [ "$attempt" -lt 3 ] && sleep $(( attempt * 3 ))
+    [ "$attempt" -lt 3 ] && sleep "$attempt"
   done
 
   # The second service. SSLMate CertSpotter reads the same public logs. It needs
@@ -968,7 +995,11 @@ check_ct() {
     cscode="$(cache_fetch "https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names&expand=issuer" \
               "$cs" "$DEA_CT_CACHE_HOURS" 'application/json')"
     say "  certspotter -> $cscode"
-    if jq -e 'type == "array"' "$cs" >/dev/null 2>&1; then
+    # An empty list is not an answer. The service gives an empty list when it
+    # holds no current certificate, and a domain almost always has one. The tool
+    # must not accept an empty list, because a stale answer from the cache of
+    # crt.sh is better.
+    if jq -e 'type == "array" and length > 0' "$cs" >/dev/null 2>&1; then
       ct_source="certspotter"
       jq -r '.[].dns_names[]?' "$cs" 2>/dev/null | lc \
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
@@ -982,6 +1013,9 @@ check_ct() {
     return
   fi
   say "  the tool used $ct_source"
+  if [ "$ct_source" != "crt.sh" ]; then
+    add_result LOW CT-SECOND-SOURCE "crt.sh gave no data, therefore the tool used $ct_source. That service shows the certificates that are valid now. It does not show each certificate from the past. The list of names is possibly shorter than the true list."
+  fi
 
   local total wild plain
   total="$(wc -l < "$WORK/ct-names.txt" | tr -d ' ')"
@@ -1007,10 +1041,10 @@ check_ct() {
 
   local issuers latest
   if [ "$ct_source" = "crt.sh" ]; then
-    issuers="$(jq -r '.[].issuer_name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | paste -sd'; ' - | cut -c1-200)"
+    issuers="$(jq -r '.[].issuer_name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | tr '\n' ';' | sed 's/;$//; s/;/; /g' | cut -c1-200)"
     latest="$(jq -r '.[].not_after // empty' "$out" 2>/dev/null | sort -r | head -1)"
   else
-    issuers="$(jq -r '.[].issuer.name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | paste -sd'; ' - | cut -c1-200)"
+    issuers="$(jq -r '.[].issuer.name // empty' "$out" 2>/dev/null | sed 's/.*O=\([^,]*\).*/\1/' | sort -u | tr '\n' ';' | sed 's/;$//; s/;/; /g' | cut -c1-200)"
     latest="$(jq -r '.[].not_after // empty' "$out" 2>/dev/null | sort -r | head -1)"
   fi
   [ -n "$issuers" ] && say "  issuers: $issuers"
@@ -1025,7 +1059,7 @@ check_ct() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 4 — Hostname resolution and origin classification
+# CHECK 4 – Hostname resolution and origin classification
 # ---------------------------------------------------------------------------
 
 check_hosts() {
@@ -1115,25 +1149,26 @@ RESOLVER
         local first_for_ip=1
         [ -n "${IP_RESULT_DONE[$ip]+x}" ] && first_for_ip=0
         IP_RESULT_DONE[$ip]=1
+        # The tool collects the addresses of each network here. It writes the
+        # results after the loop.
+        local netkey="$cls|${desc:-no-description}"
+        if [ "$first_for_ip" -eq 1 ]; then
+          NET_ADDRS[$netkey]="${NET_ADDRS[$netkey]:-}${NET_ADDRS[$netkey]:+ }$ip"
+          NET_CLASS[$netkey]="$cls"
+          [ -z "${NET_HOST[$netkey]:-}" ] && NET_HOST[$netkey]="$host"
+        fi
         case "$cls" in
           consumer|home-hint)
             host_cls="home"
             say "    $(c red '!') $host -> $ip $(c red "[$cls: ${desc:-the RIR gives no description}]")"
-            [ "$first_for_ip" -eq 1 ] && add_result HIGH ORIGIN-RESIDENTIAL "The address $ip is a home internet service. One hostname or more points to it, for example $host. The network is: ${desc:-the RIR gives no description}. An attacker can find your house from this IP address. The address does not use a proxy."
             ;;
           datacenter)
             [ "$host_cls" = "cloudflare" ] && host_cls="datacenter"
             say "    $(c yellow '·') $host -> $ip $(c dim "[data center: ${desc}]")"
-            [ "$first_for_ip" -eq 1 ] && add_result LOW ORIGIN-DATACENTER "The address $ip is at ${desc}. One hostname or more points to it, for example $host. This is not a home address. It is your origin server, and it does not use a proxy."
             ;;
           *)
             [ "$host_cls" = "cloudflare" ] && host_cls="unknown"
             say "    $(c yellow '?') $host -> $ip $(c yellow '[the tool cannot classify this network]')"
-            if [ "$HAVE_WHOIS" -eq 1 ] && [ "$first_for_ip" -eq 1 ]; then
-              add_result MEDIUM ORIGIN-UNKNOWN "The address $ip has no clear RIR description. One hostname or more points to it, for example $host. Check the network yourself. It can be a data center or a home."
-            elif [ "$first_for_ip" -eq 1 ]; then
-              add_result MEDIUM ORIGIN-NOWHOIS "The address $ip is not in the Cloudflare ranges. One hostname or more points to it, for example $host. The whois tool is absent, therefore the tool cannot find the owner of the network. Install whois."
-            fi
             ;;
         esac
       fi
@@ -1146,18 +1181,43 @@ RESOLVER
       >> "$WORK/hosts.ndjson"
   done < "$WORK/resolved.tsv"
 
+  # One result for each network. The addresses of one company are the same
+  # infrastructure, therefore one result gives you the same information as many.
+  local netkey netcls netdesc addrs naddr
+  for netkey in "${!NET_ADDRS[@]}"; do
+    netcls="${NET_CLASS[$netkey]}"
+    netdesc="${netkey#*|}"
+    addrs="${NET_ADDRS[$netkey]}"
+    naddr="$(printf '%s' "$addrs" | wc -w | tr -d ' ')"
+    case "$netcls" in
+      consumer|home-hint)
+        add_result HIGH ORIGIN-RESIDENTIAL "$naddr address(es) are on a home internet service: $netdesc. The addresses are: $(printf '%s' "$addrs" | cut -c1-200). An attacker can find your house from an address on that network. The addresses do not use a proxy."
+        ;;
+      datacenter)
+        add_result LOW ORIGIN-DATACENTER "$naddr address(es) are at $netdesc. The addresses are: $(printf '%s' "$addrs" | cut -c1-200). This is not a home address. These are your origin servers, and they do not use a proxy."
+        ;;
+      *)
+        if [ "$HAVE_WHOIS" -eq 1 ]; then
+          add_result MEDIUM ORIGIN-UNKNOWN "$naddr address(es) have no clear RIR description: $(printf '%s' "$addrs" | cut -c1-200). Check the network yourself. It can be a data center or a home."
+        else
+          add_result MEDIUM ORIGIN-NOWHOIS "$naddr address(es) are not in the Cloudflare ranges: $(printf '%s' "$addrs" | cut -c1-200). The whois tool is absent, therefore the tool cannot find the owner of the network. Install whois."
+        fi
+        ;;
+    esac
+  done
+
   if [ ! -s "$WORK/live-hosts.txt" ]; then
     say "  $(c green 'No name points to an address.')"
     add_result LOW NO-ADDRESS-RECORDS "No name under this domain points to an IP address. Therefore an attacker can find no origin server."
   else
-    say "  $cf_count address(es) use a proxy. $origin_count address(es) are direct."
+    say "  $cf_count address(es) use a proxy. $origin_count address(es) are direct. The tool found ${#NET_ADDRS[@]} network(s)."
   fi
 
   jq -s '.' "$WORK/hosts.ndjson" > "$WORK/hosts.json" 2>/dev/null || printf '[]' > "$WORK/hosts.json"
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 5 — HTTP surface
+# CHECK 5 – HTTP surface
 # ---------------------------------------------------------------------------
 
 SENSITIVE_PATHS=(
@@ -1205,7 +1265,7 @@ check_http() {
       add_result LOW HTTP-SERVER-VERSION "$host sends a Server header with a version number: $server. Remove the version number. It helps an attacker to find faults."
     fi
     local leaky
-    leaky="$(grep -iE '^(x-real-ip|x-served-by|x-backend|x-origin|x-forwarded-server|via):' "$hdrs" 2>/dev/null | tr -d '\r' | paste -sd'; ' -)"
+    leaky="$(grep -iE '^(x-real-ip|x-served-by|x-backend|x-origin|x-forwarded-server|via):' "$hdrs" 2>/dev/null | tr -d '\r' | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
     [ -n "$leaky" ] && add_result MEDIUM HTTP-ORIGIN-HEADER "$host sends headers that can give the name of your origin server: $leaky"
 
     exposed=""
@@ -1239,7 +1299,7 @@ check_http() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 6 — Archived copies
+# CHECK 6 – Archived copies
 # ---------------------------------------------------------------------------
 
 check_archive() {
@@ -1279,7 +1339,7 @@ check_archive() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 7 — EXIF GPS in published images (opt-in)
+# CHECK 7 – EXIF GPS in published images (opt-in)
 # ---------------------------------------------------------------------------
 
 check_exif() {
@@ -1328,7 +1388,7 @@ check_exif() {
 }
 
 # ---------------------------------------------------------------------------
-# CHECK 8 — Shodan (opt-in, needs SHODAN_API_KEY)
+# CHECK 8 – Shodan (opt-in, needs SHODAN_API_KEY)
 # ---------------------------------------------------------------------------
 
 check_shodan() {
@@ -1471,7 +1531,7 @@ write_report() { # write_report DOMAIN SNAPSHOT DIFF
       [ "$n" -eq 0 ] && continue
       printf '### %s (%s)\n\n' "$sev" "$n"
       jq -r --arg s "$sev" '.results[] | select(.severity == $s)
-        | "- **" + .code + "** — " + .message' "$snap"
+        | "- **" + .code + "**: " + .message' "$snap"
       printf '\n'
     done
     [ "$(num "$(jq '.results | length' "$snap" 2>/dev/null)")" -eq 0 ] && printf 'No results.\n\n'
@@ -1503,6 +1563,9 @@ audit_domain() {
   R_FILE="$WORK/results.tsv"
   IP_DESC_CACHE=()
   IP_RESULT_DONE=()
+  NET_ADDRS=()
+  NET_CLASS=()
+  NET_HOST=()
   : > "$R_FILE"
   : > "$WORK/ct-plain.txt"
   : > "$WORK/enrich-names.txt"
@@ -1587,8 +1650,8 @@ audit_domain() {
   # --- notify ---
   if [ -n "$DEA_NOTIFY_CMD" ] && { [ "$changed" -eq 1 ] || [ "$nc" -gt 0 ]; }; then
     {
-      printf '%s: %s critical, %s warn' "$domain" "$nc" "$nw"
-      [ "$changed" -eq 1 ] && printf ' — changed since baseline'
+      printf '%s: %s HIGH, %s MEDIUM' "$domain" "$nc" "$nw"
+      [ "$changed" -eq 1 ] && printf ', and the data changed from the baseline'
       printf '\n'
       jq -r '.results[] | select(.severity == "HIGH") | "  ! " + .code + " " + .message' "$snap"
       jq -r 'to_entries[] | "  ~ " + .key' "$dj" 2>/dev/null

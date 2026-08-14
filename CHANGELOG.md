@@ -3,6 +3,123 @@
 This file uses ASD-STE100 Simplified Technical English. See
 [docs/STE-COMPLIANCE.md](docs/STE-COMPLIANCE.md).
 
+## 1.2.0
+
+A run on three real domains, and one run with subfinder, found nine faults. This
+version corrects them.
+
+### Corrections
+
+- **Three email results were wrong.** Gandi publishes a relay address in
+  place of your mailbox, for example
+  `8b63ef004b7b74c693720a8c46221f08-2266992@contact.gandi.net`. The tool
+  reported that address as your data, therefore it wrote three `PII-EMAIL`
+  results that need no action. The new function `is_relay_email` finds a
+  relay address in two ways: a list of the domains that registrars use, and
+  the form of the part before the `@`. A token of 16 hexadecimal digits or more
+  is not a mailbox that a person chose. The tool now writes the LOW result
+  `RELAY-EMAIL` instead.
+
+- **The tool joined a list of names with the wrong separator.** `paste -d` takes
+  a **list** of characters and it uses them one after the other. Therefore
+  `paste -sd'; '` joined the first pair with a semicolon and the second pair with
+  a space. The issuer line joined three names into text that looks like two
+  names. This fault was in three
+  places. The same fault was in one other place in version 1.0.0, and the
+  correction there did not reach these three.
+
+- **The cache for Certificate Transparency was 6 hours.** A certificate log only
+  grows, therefore a name never leaves it, therefore an answer from one week
+  before is nearly as good as a new answer. The window is now 168 hours. A run
+  during a fault at crt.sh now uses the last good answer.
+
+- **An empty answer counted as a success.** CertSpotter gave an empty list for
+  two domains that have certificates, and the tool accepted it. An empty list is
+  now a failure, therefore an old answer from the cache of crt.sh wins.
+
+- **The tool did not say which service gave the data.** CertSpotter shows the
+  certificates that are valid now. crt.sh shows each certificate from the past.
+  The two answers are not the same, and the difference is important. The new LOW
+  result `CT-SECOND-SOURCE` says which service the tool used.
+
+- **A result for the hostnames gave a number and not the names.** A hostname
+  that points to no address is absent from Check 4, therefore the names that
+  tell an attacker which software you use were found and then not shown. On
+  horia.wtf, subfinder found `pass` and `status`, and the result said only "2
+  hostname(s)". The result now names each one.
+
+- **`ENRICH-ABSENT` was a result.** It describes the programs on your computer,
+  and not the public data about your domain. Therefore the install of subfinder
+  made a change in the list of results, and that change was noise. It is now a
+  message on the screen.
+
+- **`RDAP-NO-SERVER` was MEDIUM.** Version 1.1.0 reads the contact fields from
+  WHOIS in that condition, therefore the check is complete and the severity is
+  now LOW.
+
+- **subfinder asked its own servers for a new version.** The tool now passes
+  `-disable-update-check`, which removes one request for each domain.
+
+### One result for each network
+
+The tool wrote one result for each address. Eight addresses at one company gave
+eight results. The addresses of one company are the same infrastructure,
+therefore the tool now writes one result for each **network**. A test with five
+hostnames on four addresses at two companies gives two results.
+
+### The tool is faster
+
+The wait between the tries at crt.sh was 3 seconds and then 6 seconds. That is 9
+seconds for each domain, and 27 seconds for three domains, with no work. The wait
+is now 1 second and then 2 seconds. The longer cache window removes most of the
+tries.
+
+### Tests
+
+`tests/test-classify.sh` now has 114 tests. The new tests hold the real
+relay address from the record of numerge.net. They also test that a real
+mailbox does not look like a relay address, for example
+`j.smith@gandi-consulting.com`, which holds the name of the registrar but is not
+a domain of the registrar.
+
+## 1.1.1
+
+### Punctuation
+
+The project used the em-dash 63 times, in 10 files. ASD-STE100 restricts the
+dash, because a dash inside a sentence hides the relationship between the two
+parts of the sentence. The em-dash is now not permitted in this project, in any
+place.
+
+- A separator in a heading or a title is now the en-dash, for example
+  `Check 1 – Registration data (RDAP)`.
+- A table cell that means "not applicable" now holds the word `none`.
+- The separator in a report line is now a colon.
+- The text that the notify command sends is now a sentence. That text also used
+  the severity words of version 1.0.0, and it now uses HIGH and MEDIUM.
+
+### The checker did not find this fault
+
+The checker in `tests/test-ste.sh` reads the prose of each file, and it skips a
+heading. Each em-dash was in a heading or in a title, therefore the checker
+found none of them. The claim of 0 failures had no value for this rule.
+
+The checker now reads each raw line of each file. It has two new rules:
+
+- No em-dash, in any place.
+- No en-dash inside a sentence. A line that ends with a full stop is a
+  sentence. Text between two backticks is a quotation of an example, therefore
+  the check ignores it.
+
+### A fault in the checker itself
+
+The first version of the new rule used the bash escape `$'\u2014'`. Bash expands
+that escape only in a locale that can hold the character. In the C locale, bash
+leaves the text as the letters `u2014`, therefore the rule matched the wrong text
+and it found no real em-dash. The checker now holds the exact bytes of each
+character, from `printf` with an octal escape. Therefore it works in each
+locale.
+
 ## 1.1.0
 
 This version corrects the faults that the run of version 1.0.1 found. It also

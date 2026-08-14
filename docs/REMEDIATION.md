@@ -401,8 +401,9 @@ You must know about these results. For most of them, you do nothing.
 |------|------|
 | `RDAP-NO-REGISTRANT` | This is the best result for a registration record. |
 | `WHOIS-REDACTED` | RDAP has no server for this TLD, and WHOIS on port 43 shows no personal data. This is a good result. |
-| `ENRICH-HOSTNAMES` | Another program found hostnames that Certificate Transparency does not hold. Read them in Check 4, and ask what each name tells an attacker. |
-| `ENRICH-ABSENT` | No program for more hostnames is installed. Install `subfinder`. Certificate Transparency often stops requests, therefore one source is a risk. |
+| `RELAY-EMAIL` | Your registrar publishes its own relay address in place of your mailbox. A message to that address goes to you, and the address does not give your identity. This is what you want. |
+| `CT-SECOND-SOURCE` | crt.sh gave no data, therefore the tool used CertSpotter. CertSpotter shows the certificates that are valid now. A name from an old certificate is possibly absent. Install `subfinder`, or run the tool again when crt.sh answers. |
+| `ENRICH-HOSTNAMES` | Another program found hostnames that Certificate Transparency does not hold. The result names each one. Ask what each name tells an attacker. A name is in the list even if it points to no address. |
 | `HARVEST-UNREADABLE` | theHarvester gave no file that the tool can read. A search engine possibly stopped the requests. Run the tool again later. |
 | `RDAP-REDACTED` | The redaction works. |
 | `RDAP-REGION` | ICANN rules make this necessary. No registrar and no TLD can hide it. The region is the smallest area that you can hide. |
@@ -430,7 +431,7 @@ You must know about these results. For most of them, you do nothing.
 Add these records as DNS-only records. Do not send them through the proxy. Put
 your own certificate authority and your own address in them.
 
-### CAA — the authorities that you permit
+### CAA – the authorities that you permit
 
 ```
 example.com.  CAA  0 issue "letsencrypt.org"

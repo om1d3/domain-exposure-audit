@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-parsing.sh — tests for the parts of the tool that read the answers
+# tests/test-parsing.sh – tests for the parts of the tool that read the answers
 # of other servers.
 #
 # Version 1.0.1 corrected two faults that a run on three real domains found.
@@ -56,7 +56,7 @@ has_update_lock() {
   esac
 }
 
-printf '\n\033[1mRDAP status values — the form with spaces (RFC 9083)\033[0m\n'
+printf '\n\033[1mRDAP status values – the form with spaces (RFC 9083)\033[0m\n'
 assert_eq "the real answer from horia.wtf" yes \
   "$(has_transfer_lock 'client transfer prohibited')"
 assert_eq "two statuses"                   yes \
@@ -66,13 +66,13 @@ assert_eq "a server status"                yes \
 assert_eq "an update lock with spaces"     yes \
   "$(has_update_lock 'client update prohibited')"
 
-printf '\n\033[1mRDAP status values — the EPP form\033[0m\n'
+printf '\n\033[1mRDAP status values – the EPP form\033[0m\n'
 assert_eq "the EPP name"                   yes "$(has_transfer_lock 'clientTransferProhibited')"
 assert_eq "the EPP name in a list"         yes \
   "$(has_transfer_lock 'clientDeleteProhibited,clientTransferProhibited')"
 assert_eq "an EPP update lock"             yes "$(has_update_lock 'clientUpdateProhibited')"
 
-printf '\n\033[1mRDAP status values — a lock that is truly absent\033[0m\n'
+printf '\n\033[1mRDAP status values – a lock that is truly absent\033[0m\n'
 assert_eq "no status at all"               no  "$(has_transfer_lock '')"
 assert_eq "another status only"            no  "$(has_transfer_lock 'active')"
 assert_eq "a delete lock only"             no  "$(has_transfer_lock 'client delete prohibited')"
@@ -108,22 +108,22 @@ fake_timeout()   { printf '000'; return 28; }   # curl code 28: too slow
 fake_silent()    { return 6; }                  # no output at all
 fake_multi()     { printf '301200'; return 0; } # two codes, after a redirect
 
-printf '\n\033[1mThe HTTP code from curl — a normal answer\033[0m\n'
+printf '\n\033[1mThe HTTP code from curl – a normal answer\033[0m\n'
 assert_eq "code 200" 200 "$(http_code fake_ok)"
 assert_eq "code 301" 301 "$(http_code fake_redirect)"
 assert_eq "code 404" 404 "$(http_code fake_notfound)"
 
-printf '\n\033[1mThe HTTP code from curl — a failure gives 000 one time\033[0m\n'
+printf '\n\033[1mThe HTTP code from curl – a failure gives 000 one time\033[0m\n'
 assert_eq "the connection failed" 000 "$(http_code fake_fail)"
 assert_eq "the request was too slow" 000 "$(http_code fake_timeout)"
 assert_eq "curl wrote nothing" 000 "$(http_code fake_silent)"
 
-printf '\n\033[1mThe HTTP code from curl — the value is always three digits\033[0m\n'
+printf '\n\033[1mThe HTTP code from curl – the value is always three digits\033[0m\n'
 # This is the fault: the old code gave 000000 here.
 assert_eq "the length is 3, not 6" 3 "$(printf '%s' "$(http_code fake_fail)" | wc -c | tr -d ' ')"
 assert_eq "the last code after a redirect" 200 "$(http_code fake_multi)"
 
-printf '\n\033[1mThe HTTP code from curl — the value is valid JSON\033[0m\n'
+printf '\n\033[1mThe HTTP code from curl – the value is valid JSON\033[0m\n'
 if command -v jq >/dev/null 2>&1; then
   for f in fake_ok fake_fail fake_silent fake_multi; do
     c="$(http_code $f)"

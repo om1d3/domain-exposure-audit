@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-classify.sh — unit tests for lib/classify.sh
+# tests/test-classify.sh – unit tests for lib/classify.sh
 #
 # Run:  ./tests/test-classify.sh
 #
@@ -27,7 +27,7 @@ assert_eq() {
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$2', got '$3')"; fi
 }
 
-printf '\n\033[1mis_redacted — the placeholder text that the tool must find\033[0m\n'
+printf '\n\033[1mis_redacted – the placeholder text that the tool must find\033[0m\n'
 for v in \
   "DATA REDACTED" \
   "REDACTED FOR PRIVACY" \
@@ -47,7 +47,7 @@ do
   assert_true "'$v' -> redacted" is_redacted "$v"
 done
 
-printf '\n\033[1mis_redacted — real data that the tool must keep\033[0m\n'
+printf '\n\033[1mis_redacted – real data that the tool must keep\033[0m\n'
 for v in \
   "101 Townsend St" \
   "Strada Lipscani 12" \
@@ -91,7 +91,7 @@ assert_eq "1.2.3.4"         16909060   "$(ip2int 1.2.3.4)"
 assert_eq "104.16.0.0"      1745879040 "$(ip2int 104.16.0.0)"
 assert_eq "255.255.255.255" 4294967295 "$(ip2int 255.255.255.255)"
 
-printf '\n\033[1min_cidr4 — Cloudflare ranges\033[0m\n'
+printf '\n\033[1min_cidr4 – Cloudflare ranges\033[0m\n'
 assert_true  "104.16.0.1 in 104.16.0.0/13"      in_cidr4 104.16.0.1   104.16.0.0/13
 assert_true  "104.23.255.254 in 104.16.0.0/13"  in_cidr4 104.23.255.254 104.16.0.0/13
 assert_false "104.24.0.1 NOT in 104.16.0.0/13"  in_cidr4 104.24.0.1   104.16.0.0/13
@@ -100,7 +100,7 @@ assert_false "172.72.0.1 NOT in 172.64.0.0/13"  in_cidr4 172.72.0.1   172.64.0.0
 assert_true  "188.114.96.5 in 188.114.96.0/20"  in_cidr4 188.114.96.5 188.114.96.0/20
 assert_false "188.114.112.5 NOT in /20"         in_cidr4 188.114.112.5 188.114.96.0/20
 
-printf '\n\033[1min_cidr4 — edges\033[0m\n'
+printf '\n\033[1min_cidr4 – edges\033[0m\n'
 assert_true  "exact /32 match"          in_cidr4 8.8.8.8 8.8.8.8/32
 assert_false "/32 mismatch"             in_cidr4 8.8.8.9 8.8.8.8/32
 assert_true  "everything in /0"         in_cidr4 1.2.3.4 0.0.0.0/0
@@ -116,7 +116,7 @@ assert_false "86.120.x.x not in any CF /13" in_cidr4 86.120.44.7 104.16.0.0/13
 # data from the run that found the fault.
 # ---------------------------------------------------------------------------
 
-printf '\n\033[1mv1.0.1 — Gandi and other hosts must be a data center\033[0m\n'
+printf '\n\033[1mv1.0.1 – Gandi and other hosts must be a data center\033[0m\n'
 # A run on three real domains gave 10 wrong ORIGIN-UNKNOWN results, because the
 # word list had no entry for Gandi.
 assert_eq "Gandi -> data center"      datacenter "$(classify_network 'GANDI SAS')"
@@ -126,12 +126,35 @@ assert_eq "Strato -> data center"     datacenter "$(classify_network 'STRATO AG'
 assert_eq "Exoscale -> data center"   datacenter "$(classify_network 'Exoscale / Akenes SA')"
 assert_eq "Host Europe -> data center" datacenter "$(classify_network 'Host Europe GmbH')"
 
-printf '\n\033[1mv1.0.1 — an empty WHOIS field is redacted, not real data\033[0m\n'
+printf '\n\033[1mv1.0.1 – an empty WHOIS field is redacted, not real data\033[0m\n'
 # The old check for WHOIS on port 43 inverted a text search. An empty field did
 # not match a placeholder pattern, therefore the tool reported it as public.
 # This gave a wrong HIGH result. is_redacted must accept each empty form.
 for v in "" " " "  " "-" "--" "n/a" "N/A" "NA" "none" "None" "null" "." ","; do
   assert_true "'$v' is redacted" is_redacted "$v"
+done
+
+printf '\n\033[1mv1.2.0 – a relay address from a registrar\033[0m\n'
+# A registrar that redacts your data publishes its own relay address. The
+# tool must not report that address as your data. The first value below is the
+# real address from the record of numerge.net.
+for v in "8b63ef004b7b74c693720a8c46221f08-2266992@contact.gandi.net" \
+         "abuse-c9f3@aa.gandi.net" \
+         "a1b2c3.protect@withheldforprivacy.com" \
+         "contact@domainsbyproxy.com" \
+         "5897ac9e449841dbb7d23ab91d70714b@privacy.link" \
+         "proxy-4471@tieredaccess.com" \
+         "REDACTED@whoisguard.com"; do
+  assert_true "'$v' is a relay address" is_relay_email "$v"
+  assert_true "'$v' is also redacted" is_redacted "$v"
+done
+
+printf '\n\033[1mv1.2.0 – a real mailbox must not look like a relay address\033[0m\n'
+for v in "horia@example.com" "domains@numerge.net" "admin@my-company.co.uk" \
+         "hostmaster@example.org" "j.smith@gandi-consulting.com" \
+         "first.last@some-very-long-company-name.com"; do
+  assert_false "'$v' is not a relay address" is_relay_email "$v"
+  assert_false "'$v' is real data" is_redacted "$v"
 done
 
 printf '\n\033[1mv6_prefix\033[0m\n'

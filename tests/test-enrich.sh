@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-enrich.sh — tests for the enrichment layer and for the resolver.
+# tests/test-enrich.sh: tests for the enrichment layer and for the resolver.
 #
 # The tests use no network. The file makes fake copies of dig, subfinder, and
 # theHarvester, then it puts them first in PATH. Therefore the tests read the
@@ -132,7 +132,7 @@ PATH="$BIN:$PATH"
 # 1. The resolver
 # ---------------------------------------------------------------------------
 
-printf '\n\033[1mThe resolver — one name at a time\033[0m\n'
+printf '\n\033[1mThe resolver – one name at a time\033[0m\n'
 OUT="$TMP/r.tsv"; : > "$OUT"
 bash "$RESOLVER" two.example.com "$OUT"
 bash "$RESOLVER" gone.example.com "$OUT"
@@ -153,7 +153,7 @@ assert_eq "no AAAA record"           ""       "$(get gone.example.com 4)"
 assert_eq "a timeout message is not an address" "" "$(get slow.example.com 4)"
 assert_eq "a timeout gives no A record"         "" "$(get slow.example.com 3)"
 
-printf '\n\033[1mThe resolver — many names at the same time\033[0m\n'
+printf '\n\033[1mThe resolver – many names at the same time\033[0m\n'
 : > "$TMP/names.txt"
 for i in $(seq 1 60); do printf 'two.example.com\n' >> "$TMP/names.txt"; done
 CONC="$TMP/conc.tsv"; : > "$CONC"
@@ -166,7 +166,7 @@ assert_eq "the lines do not mix with each other" 1 "$(sort -u "$CONC" | wc -l | 
 # 2. subfinder
 # ---------------------------------------------------------------------------
 
-printf '\n\033[1msubfinder — the tool keeps only the names in the domain\033[0m\n'
+printf '\n\033[1msubfinder – the tool keeps only the names in the domain\033[0m\n'
 NAMES="$(enrich_subfinder example.com)"
 assert_eq "the number of names" 4 "$(printf '%s\n' "$NAMES" | grep -c . || true)"
 for want in www.example.com vault.example.com mail.example.com sub.deep.example.com; do

@@ -1,4 +1,4 @@
-# domains.conf — put one domain on each line. The tool ignores an empty line
+# domains.conf – put one domain on each line. The tool ignores an empty line
 # and a line that starts with #.
 #
 #   cp domains.conf.example domains.conf

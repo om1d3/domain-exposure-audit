@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/classify.sh — the functions that classify data for domain-exposure-audit
+# lib/classify.sh – the functions that classify data for domain-exposure-audit
 #
 # Each function in this file gives the same result for the same arguments. The
 # functions use no network and no files. They read only the word lists in this
@@ -38,6 +38,49 @@ is_redacted() {
     -|--|---|n/a|na|none|null|nil|.|,|0|x|xx|xxx|xxxxx|"") return 0 ;;
   esac
   printf '%s' "$v" | grep -qE "$REDACTION_PATTERNS" && return 0
+  # A relay address from a registrar is not your data.
+  is_relay_email "$v" && return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# A relay address from a registrar
+# ---------------------------------------------------------------------------
+# A registrar that redacts your data publishes its own relay address in
+# place of your mailbox. A message to that address goes to you, but the address
+# does not give your identity. Such an address is not a fault, therefore the
+# tool must not write a result for it.
+#
+# One real example from Gandi:
+#     8b63ef004b7b74c693720a8c46221f08-2266992@contact.gandi.net
+# The part before the @ is a token of 32 hexadecimal digits and a number. No
+# person chooses a mailbox name of that form.
+#
+# The tool makes the decision in two ways. First, a list of the domains that
+# registrars use for this purpose. Second, the form of the part before the @.
+# The second way finds the address of a registrar that this list does not hold.
+
+RELAY_EMAIL_DOMAINS='contact\.gandi\.net|aa\.gandi\.net|gandi\.net|withheldforprivacy\.com|domainsbyproxy\.com|contactprivacy\.com|whoisguard\.com|whoisprivacyprotect\.com|privacyprotect\.org|privacyguardian\.org|identity-protect\.org|identityprotect\.org|anonymize\.com|tieredaccess\.com|withheld\.for\.privacy|proxy\.dreamhost\.com|namecheap\.com|porkbun\.com|registrar\.cloudflare\.com|domaincontact\.registrar\.cloudflare\.com|1and1-private-registration\.com|ovh\.net|privacy\.link|privatewhois\.net|protecteddomainservices\.com|buydomains\.com|networksolutionsprivateregistration\.com|pdr\.solutions|publicdomainregistry\.com'
+
+# is_relay_email VALUE -> code 0 if the value is a relay address
+is_relay_email() {
+  local v local_part domain_part
+  v="$(printf '%s' "${1:-}" | lc | sed 's/[[:space:]]//g')"
+  case "$v" in *@*) ;; *) return 1 ;; esac
+  local_part="${v%@*}"
+  domain_part="${v##*@}"
+
+  # The first way: the domain belongs to a registrar or to a privacy service.
+  printf '%s' "$domain_part" | grep -qE "^($RELAY_EMAIL_DOMAINS)$" && return 0
+
+  # The second way: the part before the @ is a token that a program made.
+  # A token of 16 hexadecimal digits or more, with a number after it or not.
+  printf '%s' "$local_part" | grep -qE '^[0-9a-f]{16,}(-[0-9]+)?$' && return 0
+  # A token of 24 characters or more, with no full stop and no underscore.
+  printf '%s' "$local_part" | grep -qE '^[0-9a-z]{24,}$' && return 0
+  # The forms that some services use.
+  printf '%s' "$local_part" | grep -qE '(^|[.-])(protect|proxy|privacy|redacted|masked|withheld|abuse-c)([.-]|$)' && return 0
+
   return 1
 }
 

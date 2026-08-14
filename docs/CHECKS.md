@@ -11,15 +11,15 @@ This document uses ASD-STE100 Simplified Technical English. See
 
 - [The type of attacker](#the-type-of-attacker)
 - [The three severity values](#the-three-severity-values)
-- [Check 1 — Registration data (RDAP)](#check-1--registration-data-rdap)
-- [Check 2 — DNS records](#check-2--dns-records)
-- [Check 3 — Certificate Transparency](#check-3--certificate-transparency)
-- [Check 4 — Hostnames and their addresses](#check-4--hostnames-and-their-addresses)
-- [Check 5 — HTTP paths and headers](#check-5--http-paths-and-headers)
-- [Check 6 — Copies in the archive](#check-6--copies-in-the-archive)
-- [Check 7 — GPS data in images](#check-7--gps-data-in-images)
-- [Check 8 — Shodan records](#check-8--shodan-records)
-- [Check 9 — The checks that a person must do](#check-9--the-checks-that-a-person-must-do)
+- [Check 1 – Registration data (RDAP)](#check-1--registration-data-rdap)
+- [Check 2 – DNS records](#check-2--dns-records)
+- [Check 3 – Certificate Transparency](#check-3--certificate-transparency)
+- [Check 4 – Hostnames and their addresses](#check-4--hostnames-and-their-addresses)
+- [Check 5 – HTTP paths and headers](#check-5--http-paths-and-headers)
+- [Check 6 – Copies in the archive](#check-6--copies-in-the-archive)
+- [Check 7 – GPS data in images](#check-7--gps-data-in-images)
+- [Check 8 – Shodan records](#check-8--shodan-records)
+- [Check 9 – The checks that a person must do](#check-9--the-checks-that-a-person-must-do)
 - [The changes from the baseline](#the-changes-from-the-baseline)
 
 ---
@@ -72,7 +72,7 @@ back on each run. If they set a bit, the exit code would never be 0.
 
 ---
 
-## Check 1 — Registration data (RDAP)
+## Check 1 – Registration data (RDAP)
 
 ### Purpose
 
@@ -160,6 +160,7 @@ the smallest area that you can hide.
 | `RDAP-NOTFOUND` | The registry says that the domain has no registration. | LOW | Look for an error in the name, or the registration stopped. |
 | `RDAP-NO-SERVER` | RDAP has no server for this TLD, but WHOIS on port 43 shows a registration. Many ccTLDs are not in the IANA list. The tool reads the contact fields from WHOIS. | MEDIUM | Read the results for that WHOIS data. The same `PII-` codes apply. |
 | `WHOIS-REDACTED` | The tool read the contact fields from WHOIS on port 43, and it found no personal data. | LOW | Nothing. |
+| `RELAY-EMAIL` | The record holds a relay address from your registrar, and not your own address. | LOW | Nothing. This is the correct condition. |
 
 ### The limits of this check
 
@@ -173,7 +174,7 @@ database can hold your address from the time before you redacted it. See
 
 ---
 
-## Check 2 — DNS records
+## Check 2 – DNS records
 
 ### Purpose
 
@@ -255,7 +256,7 @@ that is not your own, or give `dig` the address of a public resolver.
 
 ---
 
-## Check 3 — Certificate Transparency
+## Check 3 – Certificate Transparency
 
 ### Purpose
 
@@ -312,10 +313,11 @@ The reason is not convenience. The reason is information.
 
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
-| no result | The log holds only the apex name and a wildcard name. | — | None. |
+| no result | The log holds only the apex name and a wildcard name. | none | None. |
 | `CT-HOSTNAMES` | The log holds single hostnames for all time. Read the list. Ask what each name tells an attacker. | LOW | You cannot remove them. [Give less information in the future](REMEDIATION.md#ct-hostnames). |
 | `CT-MIXED` | You have a wildcard certificate, and you also make a certificate for each host. | LOW | Use the wildcard certificate only. |
-| `CT-UNAVAILABLE` | crt.sh gave no valid JSON. | MEDIUM | This is almost always a request limit. Run the tool again after one hour. It is not a problem with your domain. |
+| `CT-UNAVAILABLE` | Both services gave no data. | MEDIUM | This is almost always a request limit. Run the tool again after one hour. It is not a problem with your domain. |
+| `CT-SECOND-SOURCE` | crt.sh gave no data, therefore the tool used CertSpotter. That service shows the certificates that are valid now, and not each certificate from the past. | LOW | Read the list of names with care. It is possibly shorter than the true list. Install `subfinder`, which reads about 30 sources. |
 
 ### The limits of this check
 
@@ -328,7 +330,7 @@ reason to operate a private authority for your internal hosts.
 
 ---
 
-## Check 3b — More hostnames from other programs
+## Check 3b – More hostnames from other programs
 
 ### Purpose
 
@@ -353,6 +355,11 @@ sources. One service that stops requests is then not a serious problem.
 
 Each program is passive. It sends no traffic to your hosts.
 
+If no program is installed, the tool writes a message on the screen. It does not
+write a result. The programs on your computer are not public data about your
+domain, therefore a change in those programs must not make a change in the list
+of results.
+
 The tool keeps a name only if the name ends with your domain. It makes each name
 lowercase, and it removes a dot at the end. Therefore a name from another domain
 cannot enter Check 4.
@@ -372,8 +379,7 @@ reads the keys in its own configuration file.
 
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
-| `ENRICH-HOSTNAMES` | The other programs found hostnames that Certificate Transparency does not hold. | LOW | Read the list in Check 4. Each name tells an attacker something. |
-| `ENRICH-ABSENT` | No program is installed. Certificate Transparency is the only source. | LOW | Install `subfinder`. Check 4 is then more reliable. |
+| `ENRICH-HOSTNAMES` | The other programs found hostnames that Certificate Transparency does not hold. The result names each one. | LOW | Read each name. A name such as pass, vault, nas, or status tells an attacker which software you use. A name is in this list even if it points to no address. |
 | `HARVEST-EMAIL` | A public search found an email address for your domain. | MEDIUM | [See the correction](REMEDIATION.md#harvest-email). |
 | `HARVEST-UNREADABLE` | theHarvester gave no file that the tool can read. | LOW | A search engine possibly stopped the requests. Run the tool again later. |
 
@@ -389,7 +395,7 @@ can be a name that you removed some years before.
 
 ---
 
-## Check 4 — Hostnames and their addresses
+## Check 4 – Hostnames and their addresses
 
 **This check answers the first question in the README.**
 
@@ -422,9 +428,13 @@ For each address that it finds, the tool does these steps:
    `unknown`.
 
 The tool asks the RIR about each address one time only, and it keeps the answer
-for the run. It also writes one result for each address, and not one result for
-each pair of a hostname and an address. Five hostnames that share two addresses
-give two results, and not ten. The screen shows each hostname.
+for the run.
+
+The tool writes one result for each **network**, and not one result for each
+address. The addresses of one company are the same infrastructure, therefore one
+result gives you the same information as many results. Five hostnames on four
+addresses at two companies give two results. The screen shows each hostname and
+each address.
 
 The names from Certificate Transparency come first, and the word list comes
 second. This order is important. The names from the log are real. The names from
@@ -506,7 +516,7 @@ The word list is short by design. Certificate Transparency finds the real names.
 
 ---
 
-## Check 5 — HTTP paths and headers
+## Check 5 – HTTP paths and headers
 
 ### Purpose
 
@@ -567,7 +577,7 @@ the paths that you think are private.
 | `HTTP-EXPOSED-MINOR` | Another path gave the code 200. | MEDIUM | Make sure that you want this path to be public. |
 | `HTTP-ORIGIN-HEADER` | The headers can give the name of your origin server. | MEDIUM | Remove the headers at the proxy. |
 | `HTTP-SERVER-VERSION` | The `Server` header holds a version number. | LOW | Remove the version number. This is a small problem. |
-| the code 000 for each path | The name points to an address, but nothing answers on port 443. | — | This is normal for a host that is not a web server. |
+| the code 000 for each path | The name points to an address, but nothing answers on port 443. | none | This is normal for a host that is not a web server. |
 
 ### The limits of this check
 
@@ -577,7 +587,7 @@ different port, or at a path that is not in the list.
 
 ---
 
-## Check 6 — Copies in the archive
+## Check 6 – Copies in the archive
 
 ### Purpose
 
@@ -628,7 +638,7 @@ The result `ARCHIVE-NONE` means that **the Wayback Machine** holds no copy.
 
 ---
 
-## Check 7 — GPS data in images
+## Check 7 – GPS data in images
 
 Use the flag `--exif` for this check. It needs the `exiftool` program.
 
@@ -665,7 +675,7 @@ yourself often does not remove the data.
 
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
-| no GPS data | The images that the tool read are correct. | — | None. |
+| no GPS data | The images that the tool read are correct. | none | None. |
 | `EXIF-GPS` | One image or more holds GPS data. | **HIGH** | [Remove the data and send the image again](REMEDIATION.md#exif-gps). Also read the archive. It can hold the first image. |
 
 ### The limits of this check
@@ -680,7 +690,7 @@ directory. That result is correct. This check is only a sample.
 
 ---
 
-## Check 8 — Shodan records
+## Check 8 – Shodan records
 
 This check needs the environment variable `SHODAN_API_KEY`.
 
@@ -714,8 +724,8 @@ The tool has no address to query, or Shodan holds no record:
 
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
-| no address to query | Each address uses a proxy. | — | None. |
-| `is not in Shodan` | Shodan holds no record of the address today. | — | Note the word "today". |
+| no address to query | Each address uses a proxy. | none | None. |
+| `is not in Shodan` | Shodan holds no record of the address today. | none | Note the word "today". |
 | `SHODAN-INDEXED` | Shodan holds the address and the open ports. | MEDIUM | Read the list of ports. Stop each port that you do not need. |
 
 ### The limits of this check
@@ -725,14 +735,14 @@ own records. An empty result from Shodan is weak evidence.
 
 ---
 
-## Check 9 — The checks that a person must do
+## Check 9 – The checks that a person must do
 
 The tool does not do these checks. Each one needs an account, a paid service, a
 CAPTCHA, or the decision of a person.
 
 Be careful. A clean result from the tool does not include these checks.
 
-### Historical WHOIS — the important one
+### Historical WHOIS – the important one
 
 Whoxy, DomainTools, SecurityTrails, and WhoisXML keep copies of registration
 records from many years in the past. If your address was public at any time, one
@@ -785,7 +795,7 @@ No program does this as well as a person who reads the results.
 
 ---
 
-## Check 10 — Why this tool does not scan a port
+## Check 10 – Why this tool does not scan a port
 
 Nmap and other active scanners are not in this tool, and the tool will not add
 them. This section gives the reason, and it tells you how to use Nmap yourself.
