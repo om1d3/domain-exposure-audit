@@ -62,10 +62,33 @@ is_redacted() {
 
 RELAY_EMAIL_DOMAINS='contact\.gandi\.net|aa\.gandi\.net|gandi\.net|withheldforprivacy\.com|domainsbyproxy\.com|contactprivacy\.com|whoisguard\.com|whoisprivacyprotect\.com|privacyprotect\.org|privacyguardian\.org|identity-protect\.org|identityprotect\.org|anonymize\.com|tieredaccess\.com|withheld\.for\.privacy|proxy\.dreamhost\.com|namecheap\.com|porkbun\.com|registrar\.cloudflare\.com|domaincontact\.registrar\.cloudflare\.com|1and1-private-registration\.com|ovh\.net|privacy\.link|privatewhois\.net|protecteddomainservices\.com|buydomains\.com|networksolutionsprivateregistration\.com|pdr\.solutions|publicdomainregistry\.com'
 
+# is_contact_uri VALUE -> code 0 if the value is an address of a web page
+# Some registries publish the address of a contact form in the email field, and
+# not an email address. One real example, from the registry of .la:
+#     https://whois.nic.la/contact/humai.la/registrant
+# Cloudflare does the same with the field contact-uri. This is the best possible
+# condition, because the record holds no email address of any type.
+is_contact_uri() {
+  local v
+  v="$(printf '%s' "${1:-}" | lc | sed 's/[[:space:]]//g')"
+  [ -z "$v" ] && return 1
+  case "$v" in
+    http://*|https://*) return 0 ;;
+  esac
+  # A value with a slash and no @ is a path, and not an email address.
+  case "$v" in
+    *@*) return 1 ;;
+    */*) return 0 ;;
+  esac
+  return 1
+}
+
 # is_relay_email VALUE -> code 0 if the value is a relay address
 is_relay_email() {
   local v local_part domain_part
   v="$(printf '%s' "${1:-}" | lc | sed 's/[[:space:]]//g')"
+  # A contact form is not your address either.
+  is_contact_uri "$v" && return 0
   case "$v" in *@*) ;; *) return 1 ;; esac
   local_part="${v%@*}"
   domain_part="${v##*@}"
@@ -109,6 +132,35 @@ classify_network() {
   if printf '%s' "$d" | grep -qE "$CONSUMER_ISP_PATTERNS"; then printf 'consumer';   return 0; fi
   if printf '%s' "$d" | grep -qE "$RESIDENTIAL_PATTERNS";  then printf 'home-hint';  return 0; fi
   printf 'unknown'
+}
+
+# ---------------------------------------------------------------------------
+# Does a hostname give the name of a program?
+# ---------------------------------------------------------------------------
+# A name such as vault or grafana tells an attacker which program you use. A
+# name such as australis or borealis tells an attacker nothing. The tool must
+# not give the same advice for the two groups.
+
+SOFTWARE_NAMES='pass|passwd|password|vault|bitwarden|vaultwarden|passbolt|keepass|keycloak|authelia|authentik|sso|auth|oauth|ldap|nas|synology|unraid|truenas|freenas|proxmox|pve|esxi|vcenter|xen|kvm|libvirt|docker|portainer|rancher|k8s|kube|kubernetes|openshift|nomad|consul|vault|grafana|prometheus|influx|graphite|zabbix|nagios|icinga|kibana|elastic|opensearch|splunk|loki|status|uptime|monitor|munin|cacti|netdata|jenkins|drone|gitlab|gitea|forgejo|git|svn|jira|confluence|redmine|mantis|sonar|nexus|artifactory|harbor|registry|plex|jellyfin|emby|kodi|sonarr|radarr|lidarr|prowlarr|bazarr|transmission|deluge|qbit|qbittorrent|rutorrent|sabnzbd|nzbget|nextcloud|owncloud|seafile|syncthing|resilio|webdav|samba|smb|nfs|ftp|sftp|tftp|vpn|wireguard|wg|openvpn|tailscale|zerotier|pihole|adguard|unbound|bind|pdns|dns|dhcp|radius|freeipa|zimbra|roundcube|rainloop|snappymail|mailcow|postfix|dovecot|exim|rspamd|spamassassin|phpmyadmin|adminer|pgadmin|mysql|mariadb|postgres|pgsql|redis|mongo|couch|influxdb|clickhouse|minio|s3|backup|borg|restic|duplicati|veeam|bacula|amanda|router|switch|firewall|pfsense|opnsense|openwrt|ubnt|unifi|mikrotik|idrac|ipmi|ilo|bmc|kvmip|camera|cam|nvr|dvr|frigate|zoneminder|shinobi|homeassistant|hass|homebridge|openhab|zwave|zigbee|mqtt|node-red|grocy|paperless|bookstack|wiki|dokuwiki|mediawiki|outline|hedgedoc|etherpad|cryptpad|jitsi|matrix|synapse|element|mattermost|rocketchat|discourse|admin|administrator|manage|management|panel|cpanel|whm|plesk|webmin|virtualmin|dashboard|portal|internal|intranet|private|secret|staging|stage|dev|devel|test|testing|qa|uat|preprod|sandbox|old|legacy|backup2|temp|tmp'
+
+# reveals_software HOSTNAME -> code 0 if the first label is the name of a program
+reveals_software() {
+  local first
+  first="$(printf '%s' "${1:-}" | lc | cut -d. -f1 | sed 's/[0-9]*$//; s/[-_]$//')"
+  [ -z "$first" ] && return 1
+  printf '%s' "$first" | grep -qxE "$SOFTWARE_NAMES" && return 0
+  return 1
+}
+
+# any_reveals_software NAMES -> code 0 if one name or more names a program
+# The names come on stdin, one on each line.
+any_reveals_software() {
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    reveals_software "$n" && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------

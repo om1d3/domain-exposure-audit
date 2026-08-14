@@ -3,6 +3,47 @@
 This file uses ASD-STE100 Simplified Technical English. See
 [docs/STE-COMPLIANCE.md](docs/STE-COMPLIANCE.md).
 
+## 1.2.1
+
+A run of version 1.2.0 on three real domains found five faults.
+
+### Corrections
+
+- **A contact form counted as your email address.** The registry of `.la`
+  publishes the address of a web page in the email field, for example
+  `https://whois.nic.la/contact/humai.la/registrant`. Cloudflare does the same.
+  The record then holds no email address of any type, which is the best possible
+  condition. But `is_relay_email` needed an `@` character, therefore the value
+  fell through to "real data" and the tool wrote three wrong `PII-EMAIL` results
+  for humai.la. The new function `is_contact_uri` finds such a value, and the
+  tool writes the new LOW result `CONTACT-FORM`.
+
+- **A result for `www` gave the wrong advice.** `ENRICH-HOSTNAMES` said that a
+  name tells an attacker which software you use, and the name was `www`. The
+  result now removes the apex name and the name `www`, because those two names
+  are public by design.
+
+- **The tool printed fewer names than it found, with no reason.** Check 3b said
+  "subfinder found 5 name(s)" and then printed one name. The tool now says how
+  many of the names are not in Certificate Transparency, before it prints them.
+
+- **Two numbers in one line did not agree.** The line said "10 address(es) are
+  direct", and the networks below it held 8 addresses. The count held each pair
+  of a hostname and an address, therefore an address that two hostnames share
+  counted two times. The tool now counts each address one time.
+
+- **The advice about a hostname was always the same.** `CT-HOSTNAMES` said that a
+  name such as pass or vault gives the name of a program, and the names were
+  `australis`, `borealis`, `cancer`, and `capricorn`. Those names give the name
+  of no program. The new function `reveals_software` holds a list of about 200
+  program names. The advice now depends on the names in the list.
+
+### Tests
+
+`tests/test-classify.sh` now has 144 tests. The new tests hold the real contact
+form address from the record of humai.la. They also test that the tool separates
+a name such as `vault` from a name such as `australis`.
+
 ## 1.2.0
 
 A run on three real domains, and one run with subfinder, found nine faults. This

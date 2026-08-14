@@ -402,6 +402,7 @@ You must know about these results. For most of them, you do nothing.
 | `RDAP-NO-REGISTRANT` | This is the best result for a registration record. |
 | `WHOIS-REDACTED` | RDAP has no server for this TLD, and WHOIS on port 43 shows no personal data. This is a good result. |
 | `RELAY-EMAIL` | Your registrar publishes its own relay address in place of your mailbox. A message to that address goes to you, and the address does not give your identity. This is what you want. |
+| `CONTACT-FORM` | The registry publishes the address of a web page in place of an email address. The record holds no email address of any type. The registry of `.la` does this, and so does Cloudflare. This is the best possible condition. |
 | `CT-SECOND-SOURCE` | crt.sh gave no data, therefore the tool used CertSpotter. CertSpotter shows the certificates that are valid now. A name from an old certificate is possibly absent. Install `subfinder`, or run the tool again when crt.sh answers. |
 | `ENRICH-HOSTNAMES` | Another program found hostnames that Certificate Transparency does not hold. The result names each one. Ask what each name tells an attacker. A name is in the list even if it points to no address. |
 | `HARVEST-UNREADABLE` | theHarvester gave no file that the tool can read. A search engine possibly stopped the requests. Run the tool again later. |

@@ -161,6 +161,7 @@ the smallest area that you can hide.
 | `RDAP-NO-SERVER` | RDAP has no server for this TLD, but WHOIS on port 43 shows a registration. Many ccTLDs are not in the IANA list. The tool reads the contact fields from WHOIS. | MEDIUM | Read the results for that WHOIS data. The same `PII-` codes apply. |
 | `WHOIS-REDACTED` | The tool read the contact fields from WHOIS on port 43, and it found no personal data. | LOW | Nothing. |
 | `RELAY-EMAIL` | The record holds a relay address from your registrar, and not your own address. | LOW | Nothing. This is the correct condition. |
+| `CONTACT-FORM` | The record holds the address of a contact form, and no email address of any type. | LOW | Nothing. This is the best possible condition. |
 
 ### The limits of this check
 
@@ -314,7 +315,7 @@ The reason is not convenience. The reason is information.
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
 | no result | The log holds only the apex name and a wildcard name. | none | None. |
-| `CT-HOSTNAMES` | The log holds single hostnames for all time. Read the list. Ask what each name tells an attacker. | LOW | You cannot remove them. [Give less information in the future](REMEDIATION.md#ct-hostnames). |
+| `CT-HOSTNAMES` | The log holds single hostnames for all time. The result names each one. It also says if a name gives the name of a program that you use. | LOW | You cannot remove them. [Give less information in the future](REMEDIATION.md#ct-hostnames). |
 | `CT-MIXED` | You have a wildcard certificate, and you also make a certificate for each host. | LOW | Use the wildcard certificate only. |
 | `CT-UNAVAILABLE` | Both services gave no data. | MEDIUM | This is almost always a request limit. Run the tool again after one hour. It is not a problem with your domain. |
 | `CT-SECOND-SOURCE` | crt.sh gave no data, therefore the tool used CertSpotter. That service shows the certificates that are valid now, and not each certificate from the past. | LOW | Read the list of names with care. It is possibly shorter than the true list. Install `subfinder`, which reads about 30 sources. |
@@ -363,6 +364,11 @@ of results.
 The tool keeps a name only if the name ends with your domain. It makes each name
 lowercase, and it removes a dot at the end. Therefore a name from another domain
 cannot enter Check 4.
+
+The result for these names does not hold the apex name or the name `www`. Those
+two names are public by design, and they tell an attacker nothing. The tool also
+says if a name gives the name of a program, for example `vault` or `grafana`. A
+name such as `australis` gives the name of no program.
 
 `subfinder` does not use a source that needs an API key, because the tool does
 not give it the `-all` option. Use `--enrich-all` to change this. Then subfinder

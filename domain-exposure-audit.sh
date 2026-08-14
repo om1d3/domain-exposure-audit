@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 PROGNAME="${0##*/}"
 
 # ---------------------------------------------------------------------------
@@ -387,6 +387,8 @@ declare -A IP_RESULT_DONE=()
 declare -A NET_ADDRS=()
 declare -A NET_CLASS=()
 declare -A NET_HOST=()
+# Each address that the tool saw, so that it counts an address one time only.
+declare -A ADDR_SEEN=()
 
 # ip_network_desc IP -> the organization name and the network name from the RIR
 ip_network_desc() {
@@ -488,7 +490,11 @@ assess_contact() {
       esac
       ;;
     email)
-      if is_relay_email "$value"; then
+      if is_contact_uri "$value"; then
+        # The registry publishes the address of a contact form, and no email
+        # address of any type. This is the best possible condition.
+        AC_FORM=1
+      elif is_relay_email "$value"; then
         # The registrar publishes its own relay address. This is the
         # correct condition, therefore the tool writes a LOW result to show
         # that it made the check.
@@ -565,7 +571,7 @@ check_registration() {
   code="$(fetch "$url" "$reg" 'application/rdap+json')"
   say "  registry RDAP  $url  -> $code"
 
-  AC_PII=0; AC_RELAY=0; AC_REGION=""; AC_COUNTRY=""
+  AC_PII=0; AC_RELAY=0; AC_FORM=0; AC_REGION=""; AC_COUNTRY=""
 
   # The tool reads the HTTP code first. An RDAP server that does not hold a TLD
   # answers 404, and the body of that answer is often not JSON. Therefore a test
@@ -578,6 +584,7 @@ check_registration() {
         add_result LOW RDAP-NO-SERVER "RDAP has no server for .$tld. WHOIS on port 43 answers, therefore the domain has a registration. The tool read the contact fields from WHOIS, therefore this check is complete."
         say "  RDAP has no server for .$tld. The tool reads WHOIS on port 43."
         [ "$AC_RELAY" -eq 1 ] && add_result LOW RELAY-EMAIL "The registration record holds a relay address from your registrar, and not your own address. A message to that address goes to you. This is the correct condition."
+        [ "$AC_FORM" -eq 1 ] && add_result LOW CONTACT-FORM "The registration record holds the address of a contact form, and no email address. A person can send you a message through that form. This is the best possible condition."
         if [ "$AC_PII" -eq 0 ]; then
           add_result LOW WHOIS-REDACTED "WHOIS on port 43 shows no personal data in the contact fields."
         fi
@@ -654,6 +661,7 @@ check_registration() {
   fi
 
   [ "$AC_RELAY" -eq 1 ] && add_result LOW RELAY-EMAIL "The registration record holds a relay address from your registrar, and not your own address. A message to that address goes to you. This is the correct condition."
+  [ "$AC_FORM" -eq 1 ] && add_result LOW CONTACT-FORM "The registration record holds the address of a contact form, and no email address. A person can send you a message through that form. This is the best possible condition."
   [ -n "$AC_REGION" ] && ! is_redacted "$AC_REGION" && \
     add_result LOW RDAP-REGION "RDAP shows this region: $AC_REGION. ICANN rules make this necessary. No registrar can hide it."
   [ -n "$AC_COUNTRY" ] && ! is_redacted "$AC_COUNTRY" && \
@@ -940,18 +948,30 @@ check_enrich() {
   # an address is absent from Check 4, therefore a result with a number only
   # hides the names that tell an attacker which software you use.
   if [ "$total" -gt 0 ]; then
-    local only_list only_n
+    local only_list only_n advice
     if [ -s "$WORK/ct-plain.txt" ]; then
       only_list="$(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$WORK/enrich-names.txt") \
                                      <(LC_ALL=C sort -u "$WORK/ct-plain.txt") 2>/dev/null || true)"
     else
       only_list="$(cat "$WORK/enrich-names.txt")"
     fi
+    # The apex name and the name www are public by design. They tell an attacker
+    # nothing, therefore the tool removes them from the result.
+    only_list="$(printf '%s\n' "$only_list" | grep -v '^$' \
+                 | grep -vxF "$domain" | grep -vxF "www.$domain" || true)"
     only_n="$(printf '%s' "$only_list" | grep -c . || true)"
     if [ "$only_n" -gt 0 ]; then
-      add_result LOW ENRICH-HOSTNAMES "The other programs found $only_n hostname(s) that Certificate Transparency does not hold: $(printf '%s' "$only_list" | tr '\n' ' ' | sed 's/ $//' | cut -c1-300). Such a name can tell an attacker which software you use. A name is in this list even if it points to no address."
+      if printf '%s\n' "$only_list" | any_reveals_software; then
+        advice="One name or more names a program that you use. That tells an attacker which faults to try, and which login page to copy."
+      else
+        advice="No name in this list gives the name of a program. Therefore the names give an attacker very little."
+      fi
+      add_result LOW ENRICH-HOSTNAMES "The other programs found $only_n hostname(s) that Certificate Transparency does not hold: $(printf '%s' "$only_list" | tr '\n' ' ' | sed 's/ $//' | cut -c1-300). $advice A name is in this list even if it points to no address."
+      say "  $only_n of them are not in Certificate Transparency:"
       local nm
       while IFS= read -r nm; do [ -n "$nm" ] && say "    $nm"; done <<< "$only_list"
+    else
+      say "  Each name is already in Certificate Transparency."
     fi
   fi
 
@@ -1033,8 +1053,13 @@ check_ct() {
   local revealing
   revealing="$(grep -vxF "$domain" "$WORK/ct-plain.txt" 2>/dev/null | grep -vx "www.$domain" || true)"
   if [ -n "$revealing" ]; then
-    local count; count="$(printf '%s' "$revealing" | grep -c . || true)"
-    add_result LOW CT-HOSTNAMES "Certificate Transparency holds a permanent record of $count hostname(s): $(printf '%s' "$revealing" | paste -sd' ' - | cut -c1-300). A name such as pass, vault, nas, or status tells an attacker which software you use."
+    local count advice; count="$(printf '%s' "$revealing" | grep -c . || true)"
+    if printf '%s\n' "$revealing" | any_reveals_software; then
+      advice="One name or more names a program that you use. That tells an attacker which faults to try, and which login page to copy."
+    else
+      advice="No name in this list gives the name of a program. Therefore the names give an attacker very little."
+    fi
+    add_result LOW CT-HOSTNAMES "Certificate Transparency holds a permanent record of $count hostname(s): $(printf '%s' "$revealing" | tr '\n' ' ' | sed 's/ $//' | cut -c1-300). $advice"
   fi
   [ "$wild" -gt 0 ] && [ "$plain" -gt 2 ] && \
     add_result LOW CT-MIXED "You have a wildcard certificate, but you also make a certificate for each host. Use only the wildcard certificate. Then no new hostname goes into a public log."
@@ -1137,13 +1162,15 @@ RESOLVER
     while IFS= read -r ip; do
       [ -n "$ip" ] || continue
       if is_cloudflare_ip "$ip"; then
-        cf_count=$((cf_count + 1))
+        if [ -z "${ADDR_SEEN[$ip]:-}" ]; then
+          cf_count=$((cf_count + 1)); ADDR_SEEN[$ip]=1
+        fi
         say "    $(c green '·') $host -> $ip $(c dim '[cloudflare proxy]')"
       else
         desc="$(ip_network_desc "$ip")"
         cls="$(classify_network "$desc")"
         networks="$networks${networks:+; }$desc"
-        origin_count=$((origin_count + 1))
+        [ -z "${ADDR_SEEN[$ip]:-}" ] && { origin_count=$((origin_count + 1)); ADDR_SEEN[$ip]=1; }
         # The tool writes a result for an address one time only. It shows each
         # hostname on the screen, but the result names the address.
         local first_for_ip=1
@@ -1566,6 +1593,7 @@ audit_domain() {
   NET_ADDRS=()
   NET_CLASS=()
   NET_HOST=()
+  ADDR_SEEN=()
   : > "$R_FILE"
   : > "$WORK/ct-plain.txt"
   : > "$WORK/enrich-names.txt"
