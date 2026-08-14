@@ -1,0 +1,36 @@
+[Unit]
+Description=Public exposure audit for owned domains
+Documentation=file:%h/domain-exposure-audit/docs/CHECKS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# EDIT THIS PATH
+ExecStart=%h/domain-exposure-audit/domain-exposure-audit.sh -q -c %h/domain-exposure-audit/domains.conf
+
+# Exit code is a bitmask: 1=warn 2=critical 4=changed 8=tool error.
+# Treat warn-only (1) as success, so the unit is not permanently "failed" over a
+# missing CAA record. Critical, changed and tool errors surface as failures.
+SuccessExitStatus=1
+
+Nice=10
+IOSchedulingClass=idle
+
+# The tool is read-only: outbound network plus its own state directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/domain-exposure-audit
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target

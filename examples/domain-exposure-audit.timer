@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly public exposure audit for owned domains
+
+[Timer]
+# Monday mornings. Weekly is the right cadence: registration data changes
+# rarely, and crt.sh throttles clients that poll hard.
+OnCalendar=Mon 07:30
+# Run after boot if the machine was off when the timer was due.
+Persistent=true
+# Spread load so not every install hits crt.sh at the same instant.
+RandomizedDelaySec=30m
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

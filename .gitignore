@@ -1,0 +1,18 @@
+# Snapshots and reports contain your own exposure data. If your registration is
+# unredacted, baseline.json holds your street address. Never commit these.
+state/
+reports/
+cache/
+*.snapshot.json
+baseline.json
+latest.json
+
+# Your actual domain list is itself information worth withholding.
+domains.conf
+
+# Editor and OS noise
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/

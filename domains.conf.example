@@ -1,0 +1,14 @@
+# domains.conf — put one domain on each line. The tool ignores an empty line
+# and a line that starts with #.
+#
+#   cp domains.conf.example domains.conf
+#
+# The .gitignore file holds domains.conf. The list of your domains is data that
+# you possibly do not want to make public.
+
+example.com
+example.net
+
+# You can put a subdomain here if you own the zone. But the apex domain is
+# usually correct. The tool finds the subdomains itself with Certificate
+# Transparency.
