@@ -115,6 +115,9 @@ cp domains.conf.example domains.conf   # then edit the file
 # keep the state of today as the baseline
 ./domain-exposure-audit.sh -c domains.conf --baseline
 
+# the same, and accept a baseline from a run that did not see all the data
+./domain-exposure-audit.sh -c domains.conf --force-baseline
+
 # show only the changes from the baseline
 ./domain-exposure-audit.sh -c domains.conf --diff-only
 
@@ -142,6 +145,31 @@ new state:
 ./domain-exposure-audit.sh -c domains.conf            # read the changes
 ./domain-exposure-audit.sh -c domains.conf --baseline  # accept the changes
 ```
+
+### The tool refuses an incomplete baseline
+
+From version 1.3.0, `--baseline` writes nothing if a service gave no data during
+that run. The tool gives a warning that names each service.
+
+The reason is the diff. If crt.sh fails, the snapshot holds an empty list of
+hostnames. A baseline with that empty list makes the next run show every
+hostname as a new name. That looks like news about your domain, and it is only
+the recovery of a service.
+
+These results stop a baseline:
+
+| Result | The gap |
+|--------|---------|
+| `CT-UNAVAILABLE` | check 3 found no name, and check 4 used the word list only |
+| `ARCHIVE-UNAVAILABLE` | check 6 did not read the archive |
+| `RDAP-UNREADABLE` | check 1 did not read the registration |
+| `HARVEST-UNREADABLE` | check 3b did not read the output of theHarvester |
+
+`CT-SECOND-SOURCE` does **not** stop a baseline. crt.sh fails often, and
+certspotter gives a good answer.
+
+Use `--force-baseline` to write the baseline anyway. The tool then gives a
+warning that the baseline holds incomplete data.
 
 ## The exit code
 
@@ -217,12 +245,24 @@ $XDG_STATE_HOME/domain-exposure-audit/       # ~/.local/state/... is the default
 │   ├── baseline.json      the state that you kept with --baseline
 │   ├── latest.json        the most recent run
 │   └── history/           the last 120 snapshots, with a time in each name
-├── cache/                 the IANA list, the Cloudflare ranges, crt.sh answers
 ├── reports/               one report file for each run
 └── .lock                  the lock file, to stop two runs at the same time
+
+$XDG_CACHE_HOME/domain-exposure-audit/       # ~/.cache/... is the default
+└── (one file for each URL)  the IANA list, the Cloudflare ranges, crt.sh answers
 ```
 
 Use `-s` to change the state directory. Use `-o` to change the report directory.
+Use `--cache-dir` to change the cache directory.
+
+**The cache is not under the state directory.** Version 1.2.1 and each earlier
+version kept it at `state/cache/`. The documented way to make a new baseline is
+`rm -rf state`, and that command therefore deleted the crt.sh answers at the
+same time. crt.sh fails often, and the cache is the only protection. The two
+directories are now separate, therefore `rm -rf state` keeps the cache.
+
+If you upgrade from version 1.2.1, the old directory `state/cache/` is no longer
+in use. You can delete it.
 
 Be careful. A snapshot and a report hold your own data. If your registration is
 not redacted, the file `baseline.json` holds your street address. For this
@@ -234,16 +274,39 @@ and `domains.conf`. Do not remove these lines if the repository is public.
 ```
 domain-exposure-audit.sh    the tool
 lib/classify.sh             the decision functions. They use no network.
-tests/test-classify.sh      144 tests for lib/. No network.
-tests/test-parsing.sh       22 tests for RDAP and HTTP answers. No network.
-tests/test-enrich.sh        36 tests for DNS and the other programs. No network.
+tests/test-classify.sh      163 tests for lib/. No network.
+tests/test-parsing.sh       36 tests for RDAP, HTTP, and the tool file. No network.
+tests/test-enrich.sh        29 tests for DNS and the other programs. No network.
 tests/test-ste.sh           the ASD-STE100 language checker
+docs/INTENT.md              each function: the purpose, the methods, and the test
 docs/CHECKS.md              each check: purpose, correct result, other results
 docs/REMEDIATION.md         each result code, and how to correct it
 docs/STE-COMPLIANCE.md      the language rules, and the word lists
 domains.conf.example        an example configuration file
 examples/                   a systemd service, a timer, and a notify command
 ```
+
+### Which document answers which question
+
+| Your question | The document |
+|---------------|--------------|
+| What does this result mean? | `docs/CHECKS.md` |
+| How do I correct it? | `docs/REMEDIATION.md` |
+| Why is this check here, and can I trust the answer? | `docs/INTENT.md` |
+| Why does the text read like this? | `docs/STE-COMPLIANCE.md` |
+
+`docs/INTENT.md` answers a question that the other three do not. **A check that
+found nothing and a check that failed to look give the same output.** An empty
+list of hostnames looks the same for a domain with no hostnames and for a run
+where crt.sh did not answer. The first is a clean result. The second is a gap in
+your knowledge.
+
+The document therefore gives three signals for each function, and not one:
+clean, found, and failed. It names the result code for each signal. Read it when
+you want to know how much a clean result is worth.
+
+It also records what the tool does **not** do, and why. The largest example is
+check 6: the tool counts the copies in the archive, and it cannot read them.
 
 The tool and the library are in two files for a reason. The library holds the
 decisions of the tool. Two examples: does this field hold redacted data, and is
@@ -304,8 +367,14 @@ the RIR. It does not know each small internet service provider. The result
 problem".
 
 crt.sh limits the number of requests. The result `CT-UNAVAILABLE` is almost
-always this limit and not a problem with your domain. The tool keeps each crt.sh
-answer for 6 hours. Change this time with `DEA_CT_CACHE_HOURS`.
+always this limit and not a problem with your domain. The tool tries three
+times, and it waits 5 seconds and then 15 seconds between the tries. It keeps
+each answer for 168 hours. Change this time with `DEA_CT_CACHE_HOURS`. When crt.sh
+fails, the tool uses the answer in the cache even if the answer is older than
+that time.
+
+From version 1.3.0 the message for `CT-UNAVAILABLE` names the HTTP code of each
+of the two services, therefore you can see which service failed and how.
 
 The tool queries public sources only. A historical WHOIS service, a people
 search database, and a data broker all need an account. The tool gives you the

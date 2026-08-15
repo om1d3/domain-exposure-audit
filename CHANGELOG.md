@@ -3,6 +3,190 @@
 This file uses ASD-STE100 Simplified Technical English. See
 [docs/STE-COMPLIANCE.md](docs/STE-COMPLIANCE.md).
 
+## 1.3.1
+
+A new document, and three faults in the language checker. The tool itself did
+not change.
+
+### docs/INTENT.md
+
+The project had a document for the meaning of each result, and a document for
+the correction of each result. It had no document for the purpose of each check.
+
+`docs/INTENT.md` gives three things for each of the 15 functions: the purpose,
+each method in the order of use, and the test that tells you the function
+worked.
+
+It starts from one problem. **A check that found nothing and a check that failed
+to look give the same output.** An empty list of hostnames looks the same for a
+domain with no hostnames and for a run where crt.sh did not answer. Each section
+therefore gives three signals and not one: clean, found, and failed. The
+`-UNAVAILABLE` and `-UNREADABLE` result codes are the test.
+
+The document names all 57 result codes. Each number in it was compared against
+the code.
+
+### The language checker: three faults
+
+**Rule 4.2 never found one sentence, in any version.** The test sent
+`printf '%s'` into `while read`. `printf '%s'` writes no final newline,
+therefore `read` returned false at the end of the data and the loop body did not
+run for the last line. Almost every line holds one sentence, therefore the test
+found nothing at all. The correction reads the file with one `awk`, and `awk`
+reads the last record correctly.
+
+**A failure did not change the exit code.** `check_paragraphs` sent `awk` into
+`while read` through a pipe. A pipe puts the loop in a subshell, therefore the
+count of the failures went back to its old value when the loop ended. A
+paragraph with too many sentences printed a failure, and the tool gave exit code
+0. A person who reads the exit code saw a clean run. Both loops now read from a
+process substitution.
+
+**The placeholder for a shell variable was one capital letter.** The test for
+rule 4.2 protects a period after a capital letter, because `J. Smith` is a name
+and not the end of a sentence. The placeholder `X` therefore joined two
+sentences into one, and gave two false results. The placeholder is now `CODE`,
+which is the placeholder that the markdown reader already used.
+
+### The language checker: 61 times faster
+
+A full run needed 83 seconds. It now needs 1.4 seconds.
+
+The cause was the number of programs. `check_words` ran 20 programs for each
+line of each file, and `check_dashes` ran 3 more for each line to remove the
+text between backticks. A full run started more than 80000 programs, and almost
+all of the time was the cost of the programs and not the work.
+
+| Function | Before | After |
+|----------|--------|-------|
+| `check_words` | 20 programs for each line | bash tests each pattern itself |
+| `check_sentences` | 4 programs for each line, 3 more for each sentence | one `awk` for each file |
+| `check_dashes` | 3 programs for each line | bash removes the backticks itself |
+
+The output is the same, character for character, except for the three faults
+above. This was tested against the version from 1.3.0 before the correction of
+the faults.
+
+A test that needs 83 seconds is a test that a person skips before a commit.
+
+### Tests
+
+`tests/test-parsing.sh` now has 36 tests. Seven new tests read the checker
+itself, and three of them give it a file that must fail and a file that must
+pass. Those three test the **exit code** and not the message, because the fault
+above printed the correct message and gave the wrong code.
+
+## 1.3.0
+
+A code review of version 1.2.1, together with a run on three real domains, found
+one fault that made a whole feature dead, one fault that made the documented
+procedure destroy its own protection, and five smaller faults.
+
+### The cache moved out of the state directory
+
+The documented way to make a new baseline is `rm -rf state`. The cache was at
+`state/cache/`, therefore that command also deleted every answer from crt.sh.
+
+`cache_fetch` holds a fallback for this exact condition: when a request fails and
+a file is in the cache, the tool uses the old file. During the run of version
+1.2.1, crt.sh answered 000, then 502, then 503, on all three domains. The
+fallback could not run, because the command deleted the cache minutes before.
+
+The cache is now at `$XDG_CACHE_HOME/domain-exposure-audit`. Use `--cache-dir` or
+`DEA_CACHE_DIR` to put it somewhere else. The old directory `state/cache/` is no
+longer in use, and you can delete it.
+
+### --baseline refuses a run that did not see all the data
+
+The run of version 1.2.1 used `--baseline`, and crt.sh failed for two of the
+three domains. The tool therefore wrote a baseline that holds an empty list of
+hostnames for those two domains. The next run would show every hostname as a new
+name. That looks like news about the domain, and it is only the recovery of a
+service.
+
+`--baseline` now writes nothing after a run with `CT-UNAVAILABLE`,
+`ARCHIVE-UNAVAILABLE`, `RDAP-UNREADABLE`, or `HARVEST-UNREADABLE`. The tool gives
+a warning that names each service. Use `--force-baseline` to write the baseline
+anyway.
+
+`CT-SECOND-SOURCE` does not stop a baseline. crt.sh fails often, and certspotter
+gives a good answer.
+
+The exit code does not change, because the condition is a fault of a service and
+not a result about your domain.
+
+### Corrections
+
+- **The notify command never ran, in any version.** An unconditional `return 0`
+  was above the notify block in `audit_domain`, therefore the block was
+  unreachable. `DEA_NOTIFY_CMD`, the flag `--notify`, and
+  `examples/notify-desktop.sh` all had no effect. The notify block now comes
+  before the exit mask, and `return 0` is the last line of the function. The
+  `return 0` is necessary: the last test in the mask is false when nothing
+  changed, and the function must give a success.
+
+- **`CT-UNAVAILABLE` named the wrong HTTP code.** The message used the code from
+  crt.sh only. During the run, certspotter answered 200 for two domains, and the
+  message said 502. The message now names the code of each service. It also says
+  which of two conditions happened: a transport failure, which a later run
+  repairs, or an answer that holds no certificate, which a later run does not
+  repair.
+
+- **The delay between the tries at crt.sh was too short.** The delays were 1
+  second and 2 seconds. A code of 502 or 503 means that the service has too much
+  work, and 3 seconds is not enough time for the load to fall. The delays are now
+  5 seconds and 15 seconds. A run costs at most 20 more seconds.
+
+- **The tool said that the SOA contact of a DNS provider was possibly your own
+  mailbox.** The list of providers was inline in the DNS check, and it had no
+  entry for Gandi. The result `SOA-RNAME` therefore came one time for each Gandi
+  domain, three times in one run. The list is now the function
+  `is_provider_soa_contact` in `lib/classify.sh`, therefore a test can test it.
+  The list holds about 40 providers. The new LOW result `SOA-PROVIDER` reports the
+  good condition, in the same way as `RELAY-EMAIL` and `CONTACT-FORM`.
+
+- **Check 3b gave a message that was not true.** When Certificate Transparency
+  gave no data and the other programs found no new name, the tool said "Each name
+  is already in Certificate Transparency". The tool held no list to compare
+  against. The message now says that the comparison was not possible.
+
+- **The systemd unit failed on the first run of a new install.**
+  `ReadWritePaths=%S/domain-exposure-audit` needs the directory to exist before
+  systemd builds the mount namespace, and the tool creates the directory later.
+  `StateDirectory=` and `CacheDirectory=` replace that line. systemd creates both
+  directories first, and it makes both writable. The unit also marks all three
+  paths that you must edit, not one.
+
+- **The tool gave no clear message on bash 3.2.** It uses `mapfile`, associative
+  arrays, and `${var: -3}`, therefore it needs bash 4.2 or a later version. macOS
+  gives bash 3.2 at `/bin/bash`. The tool now tests the version and stops with a
+  message and exit code 8.
+
+- **The README said that the tool keeps a crt.sh answer for 6 hours.** The default
+  is 168 hours.
+
+### Tests
+
+`tests/test-classify.sh` now has 163 tests. The new tests hold 13 real SOA
+contacts of DNS providers. One of them is `hostmaster.gandi.net`. The tests also
+hold four addresses that are possibly personal.
+
+`tests/test-parsing.sh` now has 29 tests. Seven new tests read the tool file:
+
+- the notify block comes before the exit mask, therefore it can run
+- the cache is not under the state directory
+- the tool has the variable `DEA_CACHE_DIR`
+- `--baseline` tests for a run with missing data
+- the tool holds the list of codes that show missing data
+- the message for `CT-UNAVAILABLE` names the code from certspotter
+- the tool tests the version of bash
+
+### What you must do after this upgrade
+
+Make a new baseline for `humai.la` and `numerge.net`. The baseline from the run of
+version 1.2.1 holds an empty list of hostnames for both, because crt.sh failed.
+Check that the output says `the tool used crt.sh` before you accept the baseline.
+
 ## 1.2.1
 
 A run of version 1.2.0 on three real domains found five faults.

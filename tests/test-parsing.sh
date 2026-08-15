@@ -162,6 +162,133 @@ else
   bad "the tool file is not readable at $TOOL"
 fi
 
+printf '\n\033[1m1.3.0 - the structure of the tool file\033[0m\n'
+if [ -r "$TOOL" ]; then
+
+  notify_line="$(grep -n '# --- notify ---' "$TOOL" | head -1 | cut -d: -f1)"
+  mask_line="$(grep -n '# --- exit mask contribution ---' "$TOOL" | head -1 | cut -d: -f1)"
+  if [ -n "$notify_line" ] && [ -n "$mask_line" ] && [ "$notify_line" -lt "$mask_line" ]; then
+    ok "the notify block comes before the exit mask, therefore it can run"
+  else
+    bad "the notify block comes before the exit mask, therefore it can run"
+  fi
+
+  if grep -q 'CACHE="\$DEA_STATE_DIR/cache"' "$TOOL"; then
+    bad "the cache is not under the state directory"
+  else
+    ok "the cache is not under the state directory"
+  fi
+  if grep -q 'DEA_CACHE_DIR' "$TOOL"; then
+    ok "the tool has the variable DEA_CACHE_DIR"
+  else
+    bad "the tool has the variable DEA_CACHE_DIR"
+  fi
+
+  if grep -q 'incomplete_reasons' "$TOOL" && grep -q 'FORCE_BASELINE' "$TOOL"; then
+    ok "--baseline tests for a run with missing data"
+  else
+    bad "--baseline tests for a run with missing data"
+  fi
+  if grep -q 'INCOMPLETE_CODES=' "$TOOL"; then
+    ok "the tool holds the list of codes that show missing data"
+  else
+    bad "the tool holds the list of codes that show missing data"
+  fi
+
+  if grep -q 'certspotter answered \$cscode' "$TOOL"; then
+    ok "the message for CT-UNAVAILABLE names the code from certspotter"
+  else
+    bad "the message for CT-UNAVAILABLE names the code from certspotter"
+  fi
+
+  if grep -q 'BASH_VERSINFO' "$TOOL"; then
+    ok "the tool tests the version of bash"
+  else
+    bad "the tool tests the version of bash"
+  fi
+
+else
+  bad "the tool file is not readable at $TOOL"
+fi
+
+printf '\n\033[1m1.3.1 - the language checker\033[0m\n'
+STE="$HERE/test-ste.sh"
+if [ -r "$STE" ]; then
+
+  # Up to version 1.3.0 the test for rule 4.2 sent "printf %s" into
+  # "while read". printf writes no final newline, therefore read returned false
+  # and the loop body never ran for the last line. Almost every line holds one
+  # sentence, therefore that test found nothing in any file, in any version.
+  if grep -q 'check_sentence_length' "$STE"; then
+    bad "the checker does not hold the form that drops the last sentence"
+  else
+    ok "the checker does not hold the form that drops the last sentence"
+  fi
+  if grep -q 'check_sentences' "$STE"; then
+    ok "the checker uses one awk for each file for rule 4.2"
+  else
+    bad "the checker uses one awk for each file for rule 4.2"
+  fi
+
+  # The placeholder for a shell variable must not be one capital letter. A
+  # capital letter and a period look like an initial such as "J. Smith".
+  if grep -qF '"CODE", out' "$STE"; then
+    ok "the placeholder for a shell variable is CODE"
+  else
+    bad "the placeholder for a shell variable is CODE"
+  fi
+
+  # Speed. The earlier form started about 20 programs for each line, and a full
+  # run needed more than 80 seconds. A test that is slow is a test that a person
+  # skips before a commit.
+  if grep -qF 'sed -e' "$STE" || grep -qF "| sed 's/\`" "$STE"; then
+    bad "the checker does not remove the backticks with an external program"
+  else
+    ok "the checker does not remove the backticks with an external program"
+  fi
+
+  # A test that finds nothing in any file is a test that nobody sees fail.
+  # This test gives the checker one file that must fail and one that must pass.
+  TMPD="$(mktemp -d)"
+  mkdir -p "$TMPD/docs" "$TMPD/tests"
+  cp "$STE" "$TMPD/tests/test-ste.sh"
+  printf 'The tool reads the name and the address and the date and the time and the size and the count and the state and the result of each check.\n' > "$TMPD/docs/LONG.md"
+  printf 'The tool reads the name.\n' > "$TMPD/docs/SHORT.md"
+  sed -i 's|^MD_FILES=.*|MD_FILES=(docs/LONG.md)|' "$TMPD/tests/test-ste.sh"
+  sed -i 's|^          docs/.*||' "$TMPD/tests/test-ste.sh"
+  sed -i 's|^SH_FILES=.*|SH_FILES=()|' "$TMPD/tests/test-ste.sh"
+  sed -i 's|^          tests/.*||; s|^          examples/.*||' "$TMPD/tests/test-ste.sh"
+
+  ( cd "$TMPD" && bash tests/test-ste.sh >/dev/null 2>&1 )
+  if [ $? -ne 0 ]; then
+    ok "the checker finds a sentence of 30 words AND gives a code that is not 0"
+  else
+    bad "the checker finds a sentence of 30 words AND gives a code that is not 0"
+  fi
+
+  sed -i 's|^MD_FILES=.*|MD_FILES=(docs/SHORT.md)|' "$TMPD/tests/test-ste.sh"
+  ( cd "$TMPD" && bash tests/test-ste.sh >/dev/null 2>&1 )
+  if [ $? -eq 0 ]; then
+    ok "the checker accepts a sentence of 5 words"
+  else
+    bad "the checker accepts a sentence of 5 words"
+  fi
+
+  # A paragraph with too many sentences must also give a code that is not 0.
+  # Before version 1.3.1 it printed a failure and gave code 0.
+  printf 'One. Two. Three. Four. Five. Six. Seven. Eight.\n' > "$TMPD/docs/SHORT.md"
+  ( cd "$TMPD" && bash tests/test-ste.sh >/dev/null 2>&1 )
+  if [ $? -ne 0 ]; then
+    ok "a paragraph with 8 sentences gives a code that is not 0"
+  else
+    bad "a paragraph with 8 sentences gives a code that is not 0"
+  fi
+  rm -rf "$TMPD"
+
+else
+  bad "tests/test-ste.sh is not readable at $STE"
+fi
+
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[32m%s passed, 0 failed\033[0m\n\n' "$PASS"; exit 0

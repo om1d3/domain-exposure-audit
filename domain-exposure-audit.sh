@@ -13,10 +13,43 @@
 # docs/STE-COMPLIANCE.md tells you about the language rules for this project.
 #
 # SPDX-License-Identifier: MIT
+#
+# 1.3.1 CHANGES
+#   - No change to the tool. docs/INTENT.md is new, and the language checker
+#     had three faults. See CHANGELOG.md.
+#
+# 1.3.0 CHANGES
+#   - The cache moved out of the state directory. Therefore "rm -rf state" no
+#     longer deletes the Certificate Transparency cache. That cache is the only
+#     protection against a crt.sh outage.
+#   - --baseline refuses to write a baseline from a run that did not see all
+#     the data. Use --force-baseline to write it anyway.
+#   - CT-UNAVAILABLE names the HTTP code of each service, and it separates a
+#     transport failure from an answer that holds no certificate.
+#   - The retry delay for crt.sh is longer, because 502 and 503 mean that the
+#     service has too much work.
+#   - SOA-PROVIDER is a new result. The tool no longer says that the SOA
+#     contact of your DNS provider is possibly your own mailbox.
+#   - Check 3b gives a correct message when Certificate Transparency gave no
+#     data.
+#   - The notify command works. An unconditional "return 0" made the code
+#     unreachable in every version up to 1.2.1.
+#   - The tool stops if bash is older than version 4.2.
 
 set -uo pipefail
 
-VERSION="1.2.1"
+# The tool uses mapfile, associative arrays, and ${var: -3}. Bash 4.2 or a
+# later version gives all three. macOS gives bash 3.2 as its system bash.
+if [ -z "${BASH_VERSINFO:-}" ] \
+   || [ "${BASH_VERSINFO[0]}" -lt 4 ] \
+   || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
+  printf 'This tool needs bash 4.2 or a later version. This bash is %s.\n' \
+    "${BASH_VERSION:-unknown}" >&2
+  printf 'On macOS, install a later version with: brew install bash\n' >&2
+  exit 8
+fi
+
+VERSION="1.3.1"
 PROGNAME="${0##*/}"
 
 # ---------------------------------------------------------------------------
@@ -25,6 +58,11 @@ PROGNAME="${0##*/}"
 
 : "${DEA_STATE_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/domain-exposure-audit}"
 : "${DEA_REPORT_DIR:=$DEA_STATE_DIR/reports}"
+# 1.3.0: The cache is NOT under the state directory. The documented way to make
+# a new baseline is "rm -rf state". When the cache was inside that directory,
+# the command also deleted the answers from crt.sh. The tool then had no stale
+# answer to fall back on, and crt.sh fails often.
+: "${DEA_CACHE_DIR:=${XDG_CACHE_HOME:-$HOME/.cache}/domain-exposure-audit}"
 : "${DEA_CONFIG:=}"
 : "${DEA_TIMEOUT:=20}"
 : "${DEA_CT_CACHE_HOURS:=168}"
@@ -44,6 +82,7 @@ DO_ENRICH=1
 DO_HARVEST=0
 ENRICH_ALL=""
 SET_BASELINE=0
+FORCE_BASELINE=0
 DIFF_ONLY=0
 EMIT_JSON=0
 QUIET=0
@@ -114,10 +153,18 @@ DOMAIN SELECTION
                           \$XDG_CONFIG_HOME/domain-exposure-audit/domains.conf
 
 BASELINE AND CHANGES
-      --baseline          keep this run as the baseline, then stop with code 0
+      --baseline          keep this run as the baseline. The tool refuses if a
+                          service gave no data in this run, because the next
+                          run then shows the recovery of that service as a
+                          change to your domain.
+      --force-baseline    write the baseline even if a service gave no data
       --diff-only         show only the changes from the baseline
   -s, --state-dir DIR     the directory for the snapshots
                           Default: $DEA_STATE_DIR
+      --cache-dir DIR     the directory for the answers from crt.sh and the
+                          other services. This is NOT under the state
+                          directory, therefore "rm -rf state" keeps the cache.
+                          Default: $DEA_CACHE_DIR
 
 WHICH CHECKS TO RUN
       --no-http           do not send HTTP requests
@@ -148,6 +195,19 @@ OTHER
   -V, --version
   -h, --help
 
+ENVIRONMENT VARIABLES
+  DEA_STATE_DIR       the same as --state-dir
+  DEA_CACHE_DIR       the same as --cache-dir
+  DEA_REPORT_DIR      the same as --report-dir
+  DEA_CONFIG          the same as --config
+  DEA_TIMEOUT         the same as --timeout
+  DEA_PARALLEL        the same as --parallel
+  DEA_CT_CACHE_HOURS  how many hours an answer stays in the cache. Default 168.
+  DEA_NOTIFY_CMD      the same as --notify
+  DEA_USER_AGENT      the User-Agent header for each request
+  DEA_HARVEST_SOURCES the sources for theHarvester
+  SHODAN_API_KEY      turns on check 8
+
 The EXIT CODE is a bitmask. One number can show you more than one result.
     0  no results, and no change
     1  the tool found MEDIUM results
@@ -156,6 +216,10 @@ The EXIT CODE is a bitmask. One number can show you more than one result.
     8  the tool failed. A tool is absent, or the tool cannot write to the
        state directory.
 For example, the code 6 shows HIGH results and a change from the baseline.
+
+The tool writes a WARNING and no baseline if a service gave no data during a
+run with --baseline. The exit code does not change, because the condition is a
+fault of the service and not a result about your domain.
 
 EXAMPLES
   $PROGNAME example.com
@@ -175,6 +239,8 @@ while [ $# -gt 0 ]; do
     -s|--state-dir)  DEA_STATE_DIR="$2"; shift 2 ;;
     -o|--report-dir) DEA_REPORT_DIR="$2"; shift 2 ;;
     --baseline)      SET_BASELINE=1; shift ;;
+    --force-baseline) SET_BASELINE=1; FORCE_BASELINE=1; shift ;;
+    --cache-dir)     DEA_CACHE_DIR="$2"; shift 2 ;;
     --diff-only)     DIFF_ONLY=1; shift ;;
     --no-http)       DO_HTTP=0; shift ;;
     --no-ct)         DO_CT=0; shift ;;
@@ -275,8 +341,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/dea.XXXXXX")" || die "cannot create temp dir"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 
-CACHE="$DEA_STATE_DIR/cache"
-mkdir -p "$CACHE"
+CACHE="$DEA_CACHE_DIR"
+mkdir -p "$CACHE" 2>/dev/null || die "cannot create cache dir: $CACHE"
 
 EXIT_MASK=0
 
@@ -770,11 +836,16 @@ check_dns() {
   # the field takes the place of the @ character. It is often a real mailbox.
   if [ -n "$soa" ]; then
     local rname; rname="$(printf '%s' "$soa" | awk '{print $2}' | sed 's/\.$//')"
-    case "$rname" in
-      *cloudflare.com|*awsdns*|*azure*|*googledomains*|*nsone*|*dnsimple*|*registrar*) : ;;
-      "") : ;;
-      *) add_result LOW SOA-RNAME "The SOA record holds this contact: $rname. If this is your personal mailbox, all persons who query your zone can read it." ;;
-    esac
+    # 1.3.0: lib/classify.sh holds the list of providers, therefore a test can
+    # test it. The list now holds Gandi. The tool gives a result in each case,
+    # because a person must know that the tool made this decision.
+    if [ -z "$rname" ]; then
+      :
+    elif is_provider_soa_contact "$rname"; then
+      add_result LOW SOA-PROVIDER "The SOA record holds this contact: $rname. The address belongs to your DNS provider or your registrar, therefore it is not your own mailbox. This is the correct condition."
+    else
+      add_result LOW SOA-RNAME "The SOA record holds this contact: $rname. The tool does not recognise the address of a DNS provider. If this is your personal mailbox, all persons who query your zone can read it."
+    fi
   fi
 
   spf="$(printf '%s' "$txt" | grep -i 'v=spf1' | head -1 || true)"
@@ -970,6 +1041,11 @@ check_enrich() {
       say "  $only_n of them are not in Certificate Transparency:"
       local nm
       while IFS= read -r nm; do [ -n "$nm" ] && say "    $nm"; done <<< "$only_list"
+    # 1.3.0: Say the true reason for a count of zero. When Certificate
+    # Transparency gave no data, the tool holds no list to compare against, and
+    # "already in Certificate Transparency" is then false.
+    elif [ ! -s "$WORK/ct-plain.txt" ]; then
+      say "  Certificate Transparency gave no name, therefore the tool cannot compare the two lists."
     else
       say "  Each name is already in Certificate Transparency."
     fi
@@ -1005,13 +1081,22 @@ check_ct() {
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
       break
     fi
-    [ "$attempt" -lt 3 ] && sleep "$attempt"
+    # 1.3.0: A longer delay. 502 and 503 mean that crt.sh has too much work,
+    # and three seconds is not enough time for the load to fall. The delays are
+    # 5 seconds and then 15 seconds, therefore a run costs at most 20 seconds
+    # more than version 1.2.1. The values are explicit, because an arithmetic
+    # form gave 5 and 20, and the documents said 5 and 15.
+    case "$attempt" in
+      1) sleep 5 ;;
+      2) sleep 15 ;;
+    esac
   done
 
   # The second service. SSLMate CertSpotter reads the same public logs. It needs
   # no key for a small number of requests each hour.
+  local cscode="not queried" cs_reason=""
   if [ -z "$ct_source" ]; then
-    local cs="$WORK/certspotter.json" cscode
+    local cs="$WORK/certspotter.json"
     cscode="$(cache_fetch "https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names&expand=issuer" \
               "$cs" "$DEA_CT_CACHE_HOURS" 'application/json')"
     say "  certspotter -> $cscode"
@@ -1024,11 +1109,23 @@ check_ct() {
       jq -r '.[].dns_names[]?' "$cs" 2>/dev/null | lc \
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u > "$WORK/ct-names.txt"
       cp "$cs" "$out"
+    # 1.3.0: Say which of the two conditions happened. An empty list and a
+    # broken answer need different actions from you. A later run repairs a
+    # broken answer. A later run does not repair an empty list.
+    elif jq -e 'type == "array" and length == 0' "$cs" >/dev/null 2>&1; then
+      cs_reason="certspotter answered, and the answer holds no certificate. That service shows only a certificate that is valid now. A later run gives the same answer."
+    elif jq -e 'type == "object"' "$cs" >/dev/null 2>&1; then
+      cs_reason="certspotter answered with a message and not with a list. The service possibly limits the number of requests. Run the tool again later."
+    else
+      cs_reason="certspotter gave no valid JSON."
     fi
   fi
 
   if [ -z "$ct_source" ]; then
-    add_result MEDIUM CT-UNAVAILABLE "crt.sh and certspotter gave no valid data. The last HTTP code was $code. Both services limit requests. Run the tool again later. Check 4 used the word list only, therefore it possibly missed some hostnames."
+    # 1.3.0: Name the HTTP code of each service. Version 1.2.1 showed the code
+    # from crt.sh only. A person then read "502" when certspotter had in fact
+    # answered 200 with a list that holds no certificate.
+    add_result MEDIUM CT-UNAVAILABLE "Certificate Transparency gave no usable data. crt.sh answered $code after 3 tries. certspotter answered $cscode. ${cs_reason:+$cs_reason }Check 3 found no name, and check 4 used the word list only, therefore it possibly missed some hostnames."
     printf '{"error":true,"names":[],"wildcards":[]}' > "$WORK/ct.json"
     return
   fi
@@ -1481,6 +1578,24 @@ build_snapshot() {
 # num VALUE -> the value if it is a number, and 0 if it is not
 num() { case "${1:-}" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
 
+# 1.3.0: These result codes mean that a service gave no data, therefore the run
+# did not see everything. A baseline from such a run is a trap: the next run
+# shows the recovery of the service as though it were news about your domain.
+# CT-SECOND-SOURCE is NOT in this list. crt.sh fails often, and certspotter
+# gives a good answer. That condition gives a warning only.
+INCOMPLETE_CODES="CT-UNAVAILABLE ARCHIVE-UNAVAILABLE RDAP-UNREADABLE HARVEST-UNREADABLE"
+
+# incomplete_reasons -> the codes from this run that show missing data
+incomplete_reasons() {
+  local code found=""
+  for code in $INCOMPLETE_CODES; do
+    if cut -f2 "$R_FILE" 2>/dev/null | grep -qxF "$code"; then
+      found="$found${found:+ }$code"
+    fi
+  done
+  printf '%s' "$found"
+}
+
 json_results() {
   if [ -s "$R_FILE" ]; then
     jq -R -s '
@@ -1659,23 +1774,27 @@ audit_domain() {
   done
 
   if [ "$SET_BASELINE" -eq 1 ]; then
-    cp "$snap" "$baseline"
-    say "  The tool wrote the baseline to $baseline"
-    changed=0
+    # 1.3.0: Do not make a baseline from a run that did not see all the data.
+    local missing; missing="$(incomplete_reasons)"
+    if [ -n "$missing" ] && [ "$FORCE_BASELINE" -eq 0 ]; then
+      warn "$domain: the tool did NOT write a baseline. These services gave no data: $missing."
+      warn "$domain: a baseline from this run makes the next run show the recovery of the service as a change."
+      warn "$domain: run the tool again later, or use --force-baseline to write the baseline now."
+    else
+      cp "$snap" "$baseline"
+      say "  The tool wrote the baseline to $baseline"
+      [ -n "$missing" ] && warn "$domain: the baseline holds incomplete data, because you used --force-baseline. These services gave no data: $missing."
+      changed=0
+    fi
   fi
 
   [ -n "$DEA_REPORT_DIR" ] && write_report "$domain" "$snap" "$dj"
   [ "$EMIT_JSON" -eq 1 ] && cat "$snap"
 
-  # --- exit mask contribution ---
-  # A LOW result sets no bit. Every domain publishes its region for all time.
-  # If a LOW result set a bit, the exit code would give you no information.
-  [ "$nw" -gt 0 ]      && EXIT_MASK=$(( EXIT_MASK | 1 ))
-  [ "$nc" -gt 0 ]      && EXIT_MASK=$(( EXIT_MASK | 2 ))
-  [ "$changed" -eq 1 ] && EXIT_MASK=$(( EXIT_MASK | 4 ))
-  return 0
-
   # --- notify ---
+  # 1.3.0: This block comes BEFORE the exit mask. Up to version 1.2.1 an
+  # unconditional "return 0" was above it, therefore the notify command never
+  # ran in any version. tests/test-parsing.sh now guards the order.
   if [ -n "$DEA_NOTIFY_CMD" ] && { [ "$changed" -eq 1 ] || [ "$nc" -gt 0 ]; }; then
     {
       printf '%s: %s HIGH, %s MEDIUM' "$domain" "$nc" "$nw"
@@ -1685,6 +1804,16 @@ audit_domain() {
       jq -r 'to_entries[] | "  ~ " + .key' "$dj" 2>/dev/null
     } | sh -c "$DEA_NOTIFY_CMD" || warn "the notify command failed"
   fi
+
+  # --- exit mask contribution ---
+  # A LOW result sets no bit. Every domain publishes its region for all time.
+  # If a LOW result set a bit, the exit code would give you no information.
+  [ "$nw" -gt 0 ]      && EXIT_MASK=$(( EXIT_MASK | 1 ))
+  [ "$nc" -gt 0 ]      && EXIT_MASK=$(( EXIT_MASK | 2 ))
+  [ "$changed" -eq 1 ] && EXIT_MASK=$(( EXIT_MASK | 4 ))
+  # The last test is false when nothing changed, therefore the function needs
+  # an explicit success. Keep this line LAST.
+  return 0
 }
 
 # ---------------------------------------------------------------------------

@@ -131,8 +131,12 @@ extract_sh() { # extract_sh FILE
         n = split(line, parts, "\"")
         out = ""
         for (i = 2; i <= n; i += 2) out = out " " parts[i]
-        gsub(/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/, "X", out)
-        gsub(/\$\([^)]*\)/, "X", out)
+        # 1.3.1: the placeholder is CODE and not X, and it is the same
+        # placeholder that extract_md uses. A single capital letter and a
+        # period look like an initial such as "J. Smith", therefore the test
+        # for rule 4.2 protected that period and joined two sentences into one.
+        gsub(/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/, "CODE", out)
+        gsub(/\$\([^)]*\)/, "CODE", out)
         if (out ~ /[A-Za-z]{4}/) print NR "\tprose\t" out
       }
     }
@@ -143,54 +147,94 @@ extract_sh() { # extract_sh FILE
 # Checks
 # ---------------------------------------------------------------------------
 
+# 1.3.1: bash tests each pattern itself. The earlier form started an external
+# program for each pattern and each line: about 20 processes for one line, and
+# more than 64000 processes for a full run. The system time was more than two
+# minutes, and almost all of it was the cost of the processes. Bash gives the
+# same answers with no process at all, because the operator =~ uses the same
+# regular expression library that grep -E uses.
+RE_OBLIQUE="[A-Za-z]{3,}/[A-Za-z]{3,}"
+RE_OBLIQUE_OK="(https?:|/mnt|/home|/usr|/etc|\\.(sh|md|json|conf|com|net|org)|CODE|\\\$[A-Z_]|docs/|lib/|tests/|examples/)"
+
 check_words() { # check_words FILE LINENO TEXT
-  local f="$1" n="$2" t="$3" hit
+  local f="$1" n="$2" t="$3" w lw seen=""
 
-  hit="$(printf '%s' "$t" | grep -oEi "$RE_CONTRACTION" | head -1)"
-  [ -n "$hit" ] && fail "$f" "$n" "punctuation: $CONTRACTIONS" "found '$hit' in: $t"
+  # grep -i gave the case-insensitive tests. nocasematch gives the same.
+  shopt -s nocasematch
+  [[ $t =~ $RE_CONTRACTION ]]   && fail "$f" "$n" "punctuation: $CONTRACTIONS"    "found '${BASH_REMATCH[0]}' in: $t"
+  [[ $t =~ $RE_COMPLEX_TENSE ]] && fail "$f" "$n" "rule 3.5: use simple tenses"   "found '${BASH_REMATCH[0]}' in: $t"
+  [[ $t =~ $RE_REMOVED ]]       && fail "$f" "$n" "rule 1.1: word not approved"   "found '${BASH_REMATCH[0]}' in: $t"
+  [[ $t =~ $RE_VAGUE ]]         && fail "$f" "$n" "rule 1.1: vague word"          "found '${BASH_REMATCH[0]}' in: $t"
+  shopt -u nocasematch
 
-  hit="$(printf '%s' "$t" | grep -oEi "$RE_COMPLEX_TENSE" | head -1)"
-  [ -n "$hit" ] && fail "$f" "$n" "rule 3.5: use simple tenses" "found '$hit' in: $t"
+  # This test was case-sensitive before, therefore it stays case-sensitive.
+  [[ $t =~ $RE_BAD_PUNCT ]]     && fail "$f" "$n" "punctuation"                   "found '${BASH_REMATCH[0]}' in: $t"
 
-  hit="$(printf '%s' "$t" | grep -oEi "$RE_REMOVED" | head -1)"
-  [ -n "$hit" ] && fail "$f" "$n" "rule 1.1: word not approved" "found '$hit' in: $t"
-
-  hit="$(printf '%s' "$t" | grep -oEi "$RE_VAGUE" | head -1)"
-  [ -n "$hit" ] && fail "$f" "$n" "rule 1.1: vague word" "found '$hit' in: $t"
-
-  hit="$(printf '%s' "$t" | grep -oE "$RE_BAD_PUNCT" | head -1)"
-  [ -n "$hit" ] && fail "$f" "$n" "punctuation" "found '$hit' in: $t"
-
-  # Rule 3.4: -ing forms.
-  local w
-  for w in $(printf '%s' "$t" | grep -oE '\b[A-Za-z]{5,}ing\b' | tr '[:upper:]' '[:lower:]' | sort -u); do
-    printf '%s' "$w" | grep -qxE "$ING_ALLOWED" && continue
-    fail "$f" "$n" "rule 3.4: no -ing form" "found '$w' in: $t"
+  # Rule 3.4: -ing forms. The earlier form used grep, tr, and sort. Bash splits
+  # the line into words itself. set -f stops the shell from an expansion of a
+  # character such as * in the text.
+  set -f
+  for w in $t; do
+    w="${w//[^A-Za-z]/}"
+    [ "${#w}" -ge 8 ] || continue            # 5 letters or more, and then "ing"
+    lw="${w,,}"
+    [ "${lw: -3}" = "ing" ] || continue
+    [[ $lw =~ ^($ING_ALLOWED)$ ]] && continue
+    case " $seen " in *" $lw "*) continue ;; esac    # sort -u, one time each
+    seen="$seen $lw"
+    fail "$f" "$n" "rule 3.4: no -ing form" "found '$lw' in: $t"
   done
+  set +f
 
   # The oblique between words, not in a path or a command.
-  if printf '%s' "$t" | grep -qE '[A-Za-z]{3,}/[A-Za-z]{3,}'; then
-    printf '%s' "$t" | grep -qE '(https?:|/mnt|/home|/usr|/etc|\.(sh|md|json|conf|com|net|org)|CODE|\$[A-Z_]|docs/|lib/|tests/|examples/)' ||
-      note "$f" "$n" "punctuation: no oblique in text" "$t"
+  if [[ $t =~ $RE_OBLIQUE ]] && [[ ! $t =~ $RE_OBLIQUE_OK ]]; then
+    note "$f" "$n" "punctuation: no oblique in text" "$t"
   fi
 }
 
-check_sentence_length() { # check_sentence_length FILE LINENO TEXT
-  local f="$1" n="$2" t="$3"
-  # Protect the periods that do not end a sentence.
-  local p
-  p="$(printf '%s' "$t" \
-     | sed -E 's/([0-9])\.([0-9])/\1@\2/g' \
-     | sed -E 's/\.(sh|md|json|conf|com|net|org|wtf|us|io)\b/@\1/g' \
-     | sed -E 's/\b([A-Z])\./\1@/g')"
-  printf '%s' "$p" | sed -E 's/([.!?])[[:space:]]+/\1\n/g' | while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    local wc
-    wc="$(printf '%s' "$s" | tr -s '[:space:]' '\n' | grep -c '[A-Za-z0-9]')"
-    if [ "$wc" -gt 25 ]; then
-      fail "$f" "$n" "rule 4.2: 25 words maximum, found $wc" "$(printf '%s' "$s" | cut -c1-110)"
-    fi
-  done
+# 1.3.1: one awk for each file, and not four programs for each line and three
+# more for each sentence. check_paragraphs already used this design. The input
+# is the output of extract_md or extract_sh: a line number, a kind, and a text.
+# 1.3.1: the loop reads from a process substitution and not from a pipe. A
+# pipe puts the loop in a subshell, therefore FAILS goes back to its old value
+# when the loop ends. The tool then prints a failure and gives exit code 0.
+check_sentences() { # check_sentences FILE EXTRACTED
+  local f="$1" src="$2"
+  while IFS=$'\t' read -r ln wc text; do
+    fail "$f" "$ln" "rule 4.2: 25 words maximum, found $wc" "$text"
+  done < <(awk -F'\t' '
+    $2 != "prose" { next }
+    {
+      line = $3
+
+      # Protect a period that does not end a sentence. awk gives no group in a
+      # replacement, therefore each loop finds one period and changes it.
+      while (match(line, /[0-9]\.[0-9]/))
+        line = substr(line, 1, RSTART) "@" substr(line, RSTART + 2)
+
+      while (match(line, /\.(sh|md|json|conf|com|net|org|wtf|us|io)([^A-Za-z0-9]|$)/))
+        line = substr(line, 1, RSTART - 1) "@" substr(line, RSTART + 1)
+
+      while (match(line, /(^|[^A-Za-z])[A-Z]\./)) {
+        pos = RSTART + RLENGTH - 1
+        line = substr(line, 1, pos - 1) "@" substr(line, pos + 1)
+      }
+
+      # One sentence on each line. The terminator stays with its sentence.
+      gsub(/[.!?][[:space:]]+/, "&\n", line)
+
+      ns = split(line, sentences, /\n/)
+      for (i = 1; i <= ns; i++) {
+        s = sentences[i]
+        if (s == "") continue
+        wc = 0
+        nw = split(s, words, /[[:space:]]+/)
+        for (j = 1; j <= nw; j++)
+          if (words[j] ~ /[A-Za-z0-9]/) wc++
+        if (wc > 25) printf "%s\t%d\t%s\n", $1, wc, substr(s, 1, 110)
+      }
+    }
+  ' "$src")
 }
 
 # check_dashes FILE
@@ -222,21 +266,41 @@ check_dashes() {
     # A dash between two backticks is a quotation of an example, and not
     # punctuation in a sentence. Therefore the check removes the text between
     # backticks first.
-    local bare
-    bare="$(printf '%s' "$line" | sed 's/`[^`]*`//g')"
-    case "$bare" in
+    # 1.3.1: this test starts no program. The earlier form removed the text
+    # between backticks with sed, for each line of each file, before it looked
+    # for an en-dash. That was 3 processes for each line, and most lines hold
+    # no en-dash at all. The test for the en-dash now comes first, and bash
+    # removes the backticks itself.
+    case "$line" in
       *"$EN_DASH"*)
-        case "$(printf '%s' "$bare" | sed 's/[[:space:]]*$//')" in
-          *.) fail "$f" "$n" "punctuation: no en-dash inside a sentence" \
-                "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-100)" ;;
+        local bare="$line" pre rest
+        while [ "${bare#*\`}" != "$bare" ] && [ "${bare#*\`*\`}" != "$bare" ]; do
+          pre="${bare%%\`*}"
+          rest="${bare#*\`}"
+          rest="${rest#*\`}"
+          bare="$pre$rest"
+        done
+        case "$bare" in
+          *"$EN_DASH"*)
+            bare="${bare%"${bare##*[![:space:]]}"}"        # remove the trailing spaces
+            case "$bare" in
+              *.) fail "$f" "$n" "punctuation: no en-dash inside a sentence" \
+                    "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-100)" ;;
+            esac ;;
         esac ;;
     esac
   done < "$f"
 }
 
+# 1.3.1: the same correction as check_sentences. This bug was older: a
+# paragraph with too many sentences printed a failure, and the tool still gave
+# exit code 0.
 check_paragraphs() { # check_paragraphs FILE
   local f="$1"
-  awk '
+  while IFS=$'\t' read -r ln count; do
+    fail "$f" "$ln" "rule 4.5: 6 sentences maximum in a paragraph, found $count" \
+         "the paragraph that starts at this line is too long"
+  done < <(awk '
     BEGIN { fence = 0; sent = 0; start = 0 }
     function flush() {
       if (sent > 6) printf "%d\t%d\n", start, sent
@@ -256,10 +320,7 @@ check_paragraphs() { # check_paragraphs FILE
       sent += n
     }
     END { flush() }
-  ' "$f" | while IFS=$'\t' read -r ln count; do
-    fail "$f" "$ln" "rule 4.5: 6 sentences maximum in a paragraph, found $count" \
-         "the paragraph that starts at this line is too long"
-  done
+  ' "$f")
 }
 
 # ---------------------------------------------------------------------------
@@ -269,6 +330,9 @@ check_paragraphs() { # check_paragraphs FILE
 printf '\n%s\n' "$(dim 'ASD-STE100 check – see docs/STE-COMPLIANCE.md for the rules applied')"
 
 cd "$ROOT" || exit 1
+
+TMP_EXTRACT="$(mktemp "${TMPDIR:-/tmp}/ste.XXXXXX")" || exit 1
+trap 'rm -f "$TMP_EXTRACT"' EXIT INT TERM
 
 MD_FILES=(README.md CHANGELOG.md docs/CHECKS.md docs/REMEDIATION.md
           docs/INTENT.md docs/STE-COMPLIANCE.md)
@@ -280,10 +344,11 @@ SH_FILES=(domain-exposure-audit.sh lib/classify.sh tests/test-classify.sh
 for f in "${MD_FILES[@]}"; do
   [ -f "$f" ] || continue
   printf '\n%s\n' "$(dim "-- $f")"
+  extract_md "$f" > "$TMP_EXTRACT"
   while IFS=$'\t' read -r n kind text; do
     check_words "$f" "$n" "$text"
-    [ "$kind" = "prose" ] && check_sentence_length "$f" "$n" "$text"
-  done < <(extract_md "$f")
+  done < "$TMP_EXTRACT"
+  check_sentences "$f" "$TMP_EXTRACT"
   check_paragraphs "$f"
   check_dashes "$f"
 done
@@ -291,10 +356,11 @@ done
 for f in "${SH_FILES[@]}"; do
   [ -f "$f" ] || continue
   printf '\n%s\n' "$(dim "-- $f")"
+  extract_sh "$f" > "$TMP_EXTRACT"
   while IFS=$'\t' read -r n kind text; do
     check_words "$f" "$n" "$text"
-    [ "$kind" = "prose" ] && check_sentence_length "$f" "$n" "$text"
-  done < <(extract_sh "$f")
+  done < "$TMP_EXTRACT"
+  check_sentences "$f" "$TMP_EXTRACT"
   check_dashes "$f"
 done
 
