@@ -1,13 +1,30 @@
+# 1.3.0 CHANGES
+#   - StateDirectory replaces ReadWritePaths. ReadWritePaths needs the path to
+#     exist before systemd builds the mount namespace, and the tool creates the
+#     directory later. The unit therefore failed on the first run of a new
+#     install. StateDirectory makes systemd create the directory first.
+#   - CacheDirectory is new, because the cache moved out of the state directory
+#     in version 1.3.0.
+#   - EDIT THE PATH in three places, not one. The path below assumes that the
+#     repository is at ~/domain-exposure-audit.
 [Unit]
 Description=Public exposure audit for owned domains
+# EDIT THIS PATH
 Documentation=file:%h/domain-exposure-audit/docs/CHECKS.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-# EDIT THIS PATH
+# EDIT THESE TWO PATHS
 ExecStart=%h/domain-exposure-audit/domain-exposure-audit.sh -q -c %h/domain-exposure-audit/domains.conf
+
+# systemd creates both directories, sets the owner, and makes them writable.
+# The tool reads $STATE_DIRECTORY and $CACHE_DIRECTORY through these variables.
+StateDirectory=domain-exposure-audit
+CacheDirectory=domain-exposure-audit
+Environment=DEA_STATE_DIR=%S/domain-exposure-audit
+Environment=DEA_CACHE_DIR=%C/domain-exposure-audit
 
 # Exit code is a bitmask: 1=warn 2=critical 4=changed 8=tool error.
 # Treat warn-only (1) as success, so the unit is not permanently "failed" over a
@@ -17,12 +34,14 @@ SuccessExitStatus=1
 Nice=10
 IOSchedulingClass=idle
 
-# The tool is read-only: outbound network plus its own state directory.
+# The tool is read-only: outbound network plus its own state and cache
+# directories. StateDirectory and CacheDirectory above make those two writable,
+# therefore no ReadWritePaths line is necessary. If a ReadWritePaths line names
+# a directory that does not yet exist, the unit does not start.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%S/domain-exposure-audit
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

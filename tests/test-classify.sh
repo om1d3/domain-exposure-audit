@@ -203,6 +203,56 @@ assert_eq "uppercase folded" "2a06:98c0" "$(v6_prefix 2A06:98C0::3)"
 assert_eq "range net part"   "2606:4700" "$(v6_prefix 2606:4700::)"
 assert_eq "non-CF address"   "2a02:2f0b" "$(v6_prefix 2a02:2f0b:b04a::1)"
 
+printf '\n\033[1m1.3.0 - the SOA contact of a DNS provider\033[0m\n'
+for c in \
+  hostmaster.gandi.net \
+  dns.cloudflare.com \
+  awsdns-hostmaster.amazon.com \
+  azuredns-hostmaster.microsoft.com \
+  dns-admin.google.com \
+  hostmaster.ovh.net \
+  hostmaster.nsone.net \
+  admin.dnsimple.com \
+  hostmaster.registrar-servers.com \
+  hostmaster.he.net \
+  hostmaster.njal.la \
+  hostmaster.strato.de \
+  hostmaster.infomaniak.ch
+do
+  if is_provider_soa_contact "$c"; then
+    ok "'$c' belongs to a provider"
+  else
+    bad "'$c' belongs to a provider"
+  fi
+done
+
+printf '\n\033[1m1.3.0 - an SOA contact that is possibly a personal mailbox\033[0m\n'
+for c in \
+  horia.example.com \
+  admin.numerge.net \
+  me.my-own-server.org \
+  root.homelab.lan
+do
+  if is_provider_soa_contact "$c"; then
+    bad "'$c' is possibly personal"
+  else
+    ok "'$c' is possibly personal"
+  fi
+done
+
+printf '\n\033[1m1.3.0 - the tool must not use the old inline list\033[0m\n'
+TOOL="${TOOL:-$HERE/../domain-exposure-audit.sh}"
+if grep -q 'is_provider_soa_contact' "$TOOL"; then
+  ok "domain-exposure-audit.sh uses is_provider_soa_contact"
+else
+  bad "domain-exposure-audit.sh uses is_provider_soa_contact"
+fi
+if grep -q 'SOA-PROVIDER' "$TOOL"; then
+  ok "domain-exposure-audit.sh gives the result SOA-PROVIDER"
+else
+  bad "domain-exposure-audit.sh gives the result SOA-PROVIDER"
+fi
+
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[32m%s passed, 0 failed\033[0m\n\n' "$PASS"

@@ -10,6 +10,9 @@ are in Simplified Technical English.
 Go to: [HIGH](#high) · [MEDIUM](#medium) · [LOW](#low) ·
 [DNS records to copy](#dns-records-to-copy)
 
+Version 1.3.0 added the result `SOA-PROVIDER`, and it changed the text for
+`CT-UNAVAILABLE`.
+
 ---
 
 ## HIGH
@@ -335,8 +338,19 @@ data. A good result under this condition has almost no value.
 curl -sL -H 'Accept: application/rdap+json' <registrar-rdap-address> | jq .
 ```
 
-`CT-UNAVAILABLE` is almost always a request limit at crt.sh.
+`CT-UNAVAILABLE` is almost always a request limit at crt.sh. From version 1.3.0
+the message names the HTTP code of each of the two services, therefore you can
+see which service failed and how. A code of 502 or 503 means that the service
+has too much work, and a later run gives a better answer. A code of 200 with an
+empty list from certspotter means that the service holds no certificate that is
+valid now, and a later run gives the same answer.
+
 `ARCHIVE-UNAVAILABLE` means that the Wayback CDX service did not answer in time.
+
+**The tool refuses to write a baseline after a run with one of these results.**
+A baseline from an incomplete run makes the next run show the recovery of the
+service as though it were a change to your domain. Run the tool again later, or
+use `--force-baseline` if you accept an incomplete baseline.
 
 ### `HTTP-EXPOSED-MINOR`
 
@@ -415,7 +429,8 @@ You must know about these results. For most of them, you do nothing.
 | `CT-MIXED` | You have a wildcard certificate, and you also make a certificate for each host. Use the wildcard certificate only. |
 | `ORIGIN-DATACENTER` | A person can reach your origin server directly. This is not your home address. Use the proxy, and permit connections from the proxy ranges only. |
 | `NO-ADDRESS-RECORDS` | No name points to an address. An attacker can find no origin. |
-| `SOA-RNAME` | If this is your personal mailbox, use a role address. |
+| `SOA-PROVIDER` | Do nothing. The SOA contact belongs to your DNS provider or your registrar, therefore no person can read your own address there. |
+| `SOA-RNAME` | If this is your personal mailbox, use a role address such as `hostmaster@` at the same domain. If the address belongs to a DNS provider that the tool does not recognise, the tool gives this result in error. Tell the project, and the name goes into the list in `lib/classify.sh`. |
 | `SPF-SOFT` | The record ends with `~all` or `?all`. Use `-all` if no other host sends your mail. |
 | `DMARC-QUARANTINE` | This policy is good. The policy `p=reject` is stronger. |
 | `NO-DNSSEC` | Set DNSSEC if your DNS company has a simple control for it. |

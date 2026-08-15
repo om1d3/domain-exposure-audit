@@ -9,6 +9,11 @@ for the result that you want to understand.
 This document uses ASD-STE100 Simplified Technical English. See
 [STE-COMPLIANCE.md](STE-COMPLIANCE.md).
 
+Version 1.3.0 changed three things in this document. `SOA-PROVIDER` is a new
+result. The message for `CT-UNAVAILABLE` now names the HTTP code of each of the
+two services. The section about the baseline tells you when the tool refuses to
+write one.
+
 - [The type of attacker](#the-type-of-attacker)
 - [The three severity values](#the-three-severity-values)
 - [Check 1 – Registration data (RDAP)](#check-1--registration-data-rdap)
@@ -236,7 +241,8 @@ three in two minutes.
 | Result | Meaning | Severity | Action |
 |--------|---------|----------|--------|
 | `AXFR-OPEN` | A nameserver permits a zone transfer to any person. All your records are public. | **HIGH** | [Correct this immediately](REMEDIATION.md#axfr-open). |
-| `SOA-RNAME` | The SOA contact looks like a personal mailbox and not the mailbox of a company. | LOW | Use a role address. |
+| `SOA-PROVIDER` | The SOA contact belongs to your DNS provider or your registrar. It is not your own mailbox. | LOW | None. This is the correct condition. |
+| `SOA-RNAME` | The tool does not recognise the SOA contact as the address of a DNS provider. Therefore it is possibly your personal mailbox. | LOW | Use a role address. If the address belongs to a provider that the tool does not know, tell the project. |
 | `NO-CAA` | Any certificate authority can make a certificate for this domain. | MEDIUM | Add CAA records. |
 | `NO-SPF` | The domain has no sender rules. A person can send mail as you. | MEDIUM | Add an SPF record. |
 | `SPF-SOFT` | The SPF record ends with `~all` or `?all`. It does not stop a false message. | LOW | Use `-all` if no other host sends your mail. |
@@ -317,13 +323,32 @@ The reason is not convenience. The reason is information.
 | no result | The log holds only the apex name and a wildcard name. | none | None. |
 | `CT-HOSTNAMES` | The log holds single hostnames for all time. The result names each one. It also says if a name gives the name of a program that you use. | LOW | You cannot remove them. [Give less information in the future](REMEDIATION.md#ct-hostnames). |
 | `CT-MIXED` | You have a wildcard certificate, and you also make a certificate for each host. | LOW | Use the wildcard certificate only. |
-| `CT-UNAVAILABLE` | Both services gave no data. | MEDIUM | This is almost always a request limit. Run the tool again after one hour. It is not a problem with your domain. |
+| `CT-UNAVAILABLE` | Both services gave no usable data. The message names the HTTP code of each service, and it says which of the two conditions happened. | MEDIUM | Read the message. A code of 502 or 503 means that the service has too much work, therefore a later run gives a better answer. An empty list from certspotter means that the service holds no certificate that is valid now, therefore a later run gives the same answer. |
 | `CT-SECOND-SOURCE` | crt.sh gave no data, therefore the tool used CertSpotter. That service shows the certificates that are valid now, and not each certificate from the past. | LOW | Read the list of names with care. It is possibly shorter than the true list. Install `subfinder`, which reads about 30 sources. |
 
 ### The limits of this check
 
 crt.sh limits the number of requests. `CT-UNAVAILABLE` is usually about crt.sh
-and not about you.
+and not about you. The tool tries three times, and it waits 5 seconds and then
+15 seconds between the tries.
+
+`CT-UNAVAILABLE` covers two different conditions, and the message tells you
+which one happened.
+
+1. **A transport failure.** crt.sh gives 000, 502, or 503, and certspotter gives
+   the same class of code. Both services have too much work. A later run gives a
+   better answer.
+2. **An answer that holds no certificate.** certspotter gives 200 with an empty
+   list. That service shows only a certificate that is valid now. A later run
+   gives the same answer. Use `subfinder` to find the names.
+
+The tool keeps each answer in a cache for 168 hours. **The cache is not under
+the state directory.** Therefore the command `rm -rf state`, which makes a new
+baseline, keeps the cache. When crt.sh fails, the tool uses the answer in the
+cache, even if that answer is older than 168 hours. Version 1.2.1 and each
+earlier version kept the cache inside the state directory, therefore the
+documented way to make a new baseline also deleted the protection against a
+crt.sh outage.
 
 Certificate Transparency holds the certificates of the public authorities only.
 A certificate from your own private authority is not in the log. This is a good

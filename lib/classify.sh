@@ -8,6 +8,12 @@
 # separate file. The unit tests can then test them. See tests/test-classify.sh.
 #
 # SPDX-License-Identifier: MIT
+#
+# 1.3.0 CHANGES
+#   - New function is_provider_soa_contact. The tool used an inline list in the
+#     DNS check, and that list had no entry for Gandi. The tool then said that
+#     hostmaster.gandi.net was possibly a personal mailbox, one time for each
+#     Gandi domain. The list is now here, therefore a test can test it.
 
 lc() { tr '[:upper:]' '[:lower:]'; }
 
@@ -124,6 +130,36 @@ CONSUMER_ISP_PATTERNS='comcast|xfinity|verizon|frontier communications|centuryli
 DATACENTER_PATTERNS='cloudflare|amazon|aws|ec2|google|gcp|azure|microsoft|oracle|digitalocean|linode|akamai|fastly|vultr|hetzner|ovh|scaleway|online s\.a\.s|contabo|netcup|ionos|1&1|godaddy|namecheap|dreamhost|bluehost|hostgator|siteground|kinsta|wpengine|heroku|render|railway|fly\.io|netlify|vercel|github|gitlab|bunny|stackpath|cdn77|leaseweb|softlayer|equinix|packet host|latitude\.sh|upcloud|kamatera|liquid web|rackspace|alibaba|aliyun|tencent|huawei cloud|yandex|selectel|servers\.com|datacamp|m247|worldstream|serverius|combell|transip|greenhost|snel\.com|tilaa|hostinger|namesilo|porkbun|gandi|infomaniak|netim|dinahosting|loopia|one\.com|hostpoint|cyso|is-interned|redpill|elastx|glesys|binero|obenetwork|domeneshop|nordu|funet|host ?europe|strato|mittwald|hosttech|nine\.ch|init7|iway|vshn|exoscale|safe ?host|opensystems|flow ?swiss|dedicated|colocation|colo |data ?cent(er|re)|hosting|cloud services|vps'
 
 # classify_network DESCRIPTION -> datacenter, consumer, home-hint, or unknown
+# ---------------------------------------------------------------------------
+# The SOA contact
+# ---------------------------------------------------------------------------
+# The second field of an SOA record is an email address, and the first dot
+# takes the place of the @ character. A managed DNS provider puts its own
+# address there. A person who runs their own nameserver often puts a real
+# mailbox there, and every person who queries the zone can then read it.
+#
+# is_provider_soa_contact CONTACT
+#   0 -> the address belongs to a DNS provider or a registrar
+#   1 -> the tool cannot recognise the address, therefore it is possibly yours
+is_provider_soa_contact() {
+  local v; v="$(printf '%s' "${1:-}" | lc | sed 's/\.$//')"
+  [ -n "$v" ] || return 0
+  case "$v" in
+    *cloudflare.com|*awsdns*|*amazonaws.com|*azure*|*azure-dns*|\
+    *googledomains*|*google.com|*googledomains.com|\
+    *gandi.net|*ovh.net|*ovh.com|*hetzner.com|*hetzner.de|\
+    *namecheap.com|*registrar-servers.com|*porkbun.com|*dnsimple.com|\
+    *nsone.net|*dnsmadeeasy.com|*ultradns*|*akam.net|*akamai*|\
+    *digitalocean.com|*linode.com|*vultr.com|*netlify.com|*vercel-dns.com|\
+    *he.net|*dyn.com|*easydns.com|*njal.la|*inwx.de|*ionos.com|*1and1*|\
+    *strato.de|*infomaniak.ch|*loopia.se|*one.com|*domeneshop.no|\
+    *transip.nl|*combell.com|*rackspace.com|*constellix.com|\
+    *registrar*|*registry*|*hostmaster.*|*dns-admin.*|*dnsadmin.*)
+      return 0 ;;
+  esac
+  return 1
+}
+
 classify_network() {
   local d
   d="$(printf '%s' "${1:-}" | lc)"
