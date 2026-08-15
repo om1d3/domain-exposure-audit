@@ -16,3 +16,8 @@ domains.conf
 .DS_Store
 .idea/
 .vscode/
+
+# Delivery archives. These are a transport, not a part of the project.
+*.tar.gz
+*.tgz
+*.zip

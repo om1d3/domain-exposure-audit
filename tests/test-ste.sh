@@ -271,7 +271,7 @@ printf '\n%s\n' "$(dim 'ASD-STE100 check – see docs/STE-COMPLIANCE.md for the 
 cd "$ROOT" || exit 1
 
 MD_FILES=(README.md CHANGELOG.md docs/CHECKS.md docs/REMEDIATION.md
-          docs/STE-COMPLIANCE.md)
+          docs/INTENT.md docs/STE-COMPLIANCE.md)
 SH_FILES=(domain-exposure-audit.sh lib/classify.sh tests/test-classify.sh
           tests/test-parsing.sh tests/test-enrich.sh tests/test-ste.sh
           examples/notify-desktop.sh domains.conf.example
